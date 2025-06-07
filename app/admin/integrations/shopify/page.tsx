@@ -153,10 +153,15 @@ export default function ShopifyIntegrationPage() {
 
   const fetchRecentOrders = async () => {
     try {
-      const response = await fetch("/api/integrations/shopify/orders")
+      const headers = await getAuthHeaders()
+      const response = await fetch("/api/integrations/shopify/orders", { headers })
+
       if (response.ok) {
         const data = await response.json()
+        console.log("📦 Fetched recent orders:", data.orders?.length || 0)
         setRecentOrders(data.orders || [])
+      } else {
+        console.error("❌ Failed to fetch recent orders:", response.status)
       }
     } catch (error) {
       console.error("Error fetching Shopify orders:", error)

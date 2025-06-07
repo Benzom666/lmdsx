@@ -115,7 +115,7 @@ export default function AdminOrdersPage() {
 
     setLoading(true)
     try {
-      // First fetch orders
+      // First fetch orders (including those created from Shopify)
       const { data: ordersData, error: ordersError } = await supabase
         .from("orders")
         .select("*")
@@ -144,6 +144,7 @@ export default function AdminOrdersPage() {
         driver_name: order.driver_id ? driverMap.get(order.driver_id) || "Unknown Driver" : "Unassigned",
       }))
 
+      console.log(`📦 Loaded ${ordersWithDriverNames.length} orders`)
       setOrders(ordersWithDriverNames)
     } catch (error) {
       console.error("Error fetching orders:", error)
