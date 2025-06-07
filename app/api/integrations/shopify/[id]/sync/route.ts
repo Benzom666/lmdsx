@@ -118,27 +118,10 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
 
     console.log(`🔄 Syncing orders for shop: ${connection.shop_domain}`)
 
-    // Remove the mock order generation and only use real Shopify API
+    // Only use real Shopify API with proper error handling
     let orders: any[] = []
-    let isRealShopifyData = false
 
-    if (connection.access_token.startsWith("shpat_")) {
-      try {
-        console.log("🌐 Fetching real orders from Shopify API...")
-        orders = await fetchShopifyOrders(connection.shop_domain, connection.access_token)
-        isRealShopifyData = true
-        console.log(`✅ Fetched ${orders.length} real orders from Shopify`)
-      } catch (shopifyError) {
-        console.error("❌ Shopify API failed:", shopifyError)
-        return NextResponse.json(
-          {
-            error: "Failed to fetch orders from Shopify",
-            details: shopifyError instanceof Error ? shopifyError.message : "Unknown error",
-          },
-          { status: 500 },
-        )
-      }
-    } else {
+    if (!connection.access_token.startsWith("shpat_")) {
       console.log("❌ Invalid Shopify access token - must start with 'shpat_'")
       return NextResponse.json(
         {
@@ -146,6 +129,48 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
           details: "Access token must be a valid Shopify private app token starting with 'shpat_'",
         },
         { status: 400 },
+      )
+    }
+
+    try {
+      console.log("🌐 Fetching real orders from Shopify API...")
+      orders = await fetchShopifyOrders(connection.shop_domain, connection.access_token)
+      console.log(`✅ Fetched ${orders.length} real orders from Shopify`)
+    } catch (shopifyError) {
+      console.error("❌ Shopify API failed:", shopifyError)
+
+      // Provide more detailed error information
+      let errorMessage = "Failed to fetch orders from Shopify"
+      let errorDetails = "Unknown error"
+
+      if (shopifyError instanceof Error) {
+        errorDetails = shopifyError.message
+
+        // Check for specific error types
+        if (shopifyError.message.includes("Failed to fetch")) {
+          errorMessage = "Network error connecting to Shopify"
+          errorDetails = "Unable to connect to Shopify API. Please check your internet connection and try again."
+        } else if (shopifyError.message.includes("401")) {
+          errorMessage = "Invalid Shopify credentials"
+          errorDetails = "Your Shopify access token is invalid or has expired. Please check your connection settings."
+        } else if (shopifyError.message.includes("403")) {
+          errorMessage = "Insufficient Shopify permissions"
+          errorDetails = "Your Shopify app doesn't have the required permissions to read orders."
+        } else if (shopifyError.message.includes("404")) {
+          errorMessage = "Shopify store not found"
+          errorDetails = "The specified Shopify store domain could not be found."
+        } else if (shopifyError.message.includes("429")) {
+          errorMessage = "Shopify API rate limit exceeded"
+          errorDetails = "Too many requests to Shopify API. Please wait a moment and try again."
+        }
+      }
+
+      return NextResponse.json(
+        {
+          error: errorMessage,
+          details: errorDetails,
+        },
+        { status: 500 },
       )
     }
 
@@ -276,26 +301,81 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
 }
 
 async function fetchShopifyOrders(shopDomain: string, accessToken: string): Promise<any[]> {
-  const url = `https://${shopDomain}/admin/api/2023-10/orders.json?status=any&limit=50`
+  // Validate inputs
+  if (!shopDomain || !accessToken) {
+    throw new Error("Shop domain and access token are required")
+  }
+
+  // Clean up shop domain (remove protocol if present)
+  const cleanDomain = shopDomain.replace(/^https?:\/\//, "").replace(/\/$/, "")
+
+  const url = `https://${cleanDomain}/admin/api/2023-10/orders.json?status=any&limit=50`
 
   console.log("🌐 Fetching from Shopify API:", url)
 
-  const response = await fetch(url, {
-    headers: {
-      "X-Shopify-Access-Token": accessToken,
-      "Content-Type": "application/json",
-    },
-  })
+  try {
+    const response = await fetch(url, {
+      method: "GET",
+      headers: {
+        "X-Shopify-Access-Token": accessToken,
+        "Content-Type": "application/json",
+        "User-Agent": "DeliveryOS/1.0",
+      },
+      // Add timeout to prevent hanging requests
+      signal: AbortSignal.timeout(30000), // 30 second timeout
+    })
 
-  if (!response.ok) {
-    const errorText = await response.text()
-    console.error("❌ Shopify API error:", response.status, errorText)
-    throw new Error(`Shopify API error: ${response.status} ${errorText}`)
+    console.log("📡 Shopify API response status:", response.status)
+    console.log("📡 Shopify API response headers:", Object.fromEntries(response.headers.entries()))
+
+    if (!response.ok) {
+      const errorText = await response.text()
+      console.error("❌ Shopify API error:", response.status, errorText)
+
+      // Provide specific error messages based on status code
+      switch (response.status) {
+        case 401:
+          throw new Error(`Shopify API authentication failed (401): Invalid access token`)
+        case 403:
+          throw new Error(`Shopify API access forbidden (403): Insufficient permissions`)
+        case 404:
+          throw new Error(`Shopify store not found (404): Check your shop domain`)
+        case 429:
+          throw new Error(`Shopify API rate limit exceeded (429): Too many requests`)
+        case 500:
+        case 502:
+        case 503:
+        case 504:
+          throw new Error(`Shopify API server error (${response.status}): Please try again later`)
+        default:
+          throw new Error(`Shopify API error (${response.status}): ${errorText}`)
+      }
+    }
+
+    const data = await response.json()
+    console.log(`✅ Shopify API returned ${data.orders?.length || 0} orders`)
+
+    // Validate response structure
+    if (!data || typeof data !== "object") {
+      throw new Error("Invalid response format from Shopify API")
+    }
+
+    return data.orders || []
+  } catch (error) {
+    console.error("❌ Fetch error details:", error)
+
+    // Handle different types of errors
+    if (error instanceof TypeError && error.message.includes("Failed to fetch")) {
+      throw new Error("Network error: Unable to connect to Shopify API. Please check your internet connection.")
+    }
+
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw new Error("Request timeout: Shopify API took too long to respond. Please try again.")
+    }
+
+    // Re-throw the error if it's already a custom error
+    throw error
   }
-
-  const data = await response.json()
-  console.log(`✅ Shopify API returned ${data.orders?.length || 0} orders`)
-  return data.orders || []
 }
 
 async function createDeliveryOrder(shopifyOrder: any, connection: any, adminId: string) {

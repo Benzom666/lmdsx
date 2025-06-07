@@ -1,118 +1,83 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { createClient } from "@supabase/supabase-js"
 
-const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!)
+// Use service role client that bypasses RLS
+const supabaseServiceRole = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!,
+  {
+    auth: {
+      autoRefreshToken: false,
+      persistSession: false,
+    },
+  },
+)
 
 export async function POST(request: NextRequest, { params }: { params: { id: string } }) {
+  console.log("=== TEST SHOPIFY CONNECTION ===")
+  console.log("Connection ID:", params.id)
+
   try {
     const { id } = params
 
     // Get connection details
-    const { data: connection, error: connectionError } = await supabase
+    const { data: connection, error: connectionError } = await supabaseServiceRole
       .from("shopify_connections")
       .select("*")
       .eq("id", id)
       .single()
 
     if (connectionError || !connection) {
+      console.log("❌ Connection not found:", connectionError)
       return NextResponse.json({ error: "Connection not found" }, { status: 404 })
     }
 
-    // Validate connection details
-    if (!connection.shop_domain || !connection.access_token) {
-      return NextResponse.json({ error: "Invalid connection configuration" }, { status: 400 })
-    }
+    console.log("✅ Testing connection to:", connection.shop_domain)
 
-    console.log(`Testing connection to shop: ${connection.shop_domain}`)
-
-    // Test connection to Shopify API with a simple shop info request
+    // Test the Shopify API connection
     try {
-      const testUrl = `https://${connection.shop_domain}/admin/api/2023-10/shop.json`
-      console.log(`Testing with URL: ${testUrl}`)
+      const testResult = await testShopifyConnection(connection.shop_domain, connection.access_token)
 
-      // Create an AbortController for timeout
-      const controller = new AbortController()
-      const timeoutId = setTimeout(() => controller.abort(), 15000) // 15 second timeout for test
-
-      const response = await fetch(testUrl, {
-        method: "GET",
-        headers: {
-          "X-Shopify-Access-Token": connection.access_token,
-          "Content-Type": "application/json",
-          "User-Agent": "DeliverySystem/1.0",
-        },
-        signal: controller.signal,
-      })
-
-      clearTimeout(timeoutId)
-
-      console.log(`Test response status: ${response.status}`)
-
-      if (!response.ok) {
-        const errorText = await response.text()
-        console.error(`Shopify test error: ${response.status} - ${errorText}`)
-
-        if (response.status === 401) {
-          return NextResponse.json({ error: "Invalid access token" }, { status: 401 })
-        } else if (response.status === 403) {
-          return NextResponse.json({ error: "Insufficient permissions" }, { status: 403 })
-        } else if (response.status === 404) {
-          return NextResponse.json({ error: "Store not found" }, { status: 404 })
-        } else {
-          return NextResponse.json(
-            {
-              error: `Shopify API error: ${response.status}`,
-              details: errorText,
-            },
-            { status: 400 },
-          )
-        }
-      }
-
-      const shopData = await response.json()
-      console.log(`Test successful for shop: ${shopData.shop?.name || connection.shop_domain}`)
-
+      console.log("✅ Connection test successful")
       return NextResponse.json({
         success: true,
-        shop_name: shopData.shop?.name || "Unknown",
-        shop_domain: shopData.shop?.domain || connection.shop_domain,
-        message: "Connection test successful",
+        message: "Successfully connected to Shopify store",
+        shop_info: testResult,
       })
-    } catch (fetchError) {
-      console.error("Network error testing Shopify connection:", fetchError)
+    } catch (error) {
+      console.error("❌ Connection test failed:", error)
 
-      // Handle different types of fetch errors
-      if (fetchError instanceof Error) {
-        if (fetchError.name === "AbortError") {
-          return NextResponse.json(
-            { error: "Connection timeout - Shopify API took too long to respond" },
-            { status: 408 },
-          )
-        } else if (fetchError.message.includes("ENOTFOUND") || fetchError.message.includes("DNS")) {
-          return NextResponse.json(
-            { error: "Cannot resolve shop domain. Please check the domain format (e.g., your-store.myshopify.com)" },
-            { status: 400 },
-          )
-        } else if (fetchError.message.includes("ECONNREFUSED")) {
-          return NextResponse.json(
-            { error: "Connection refused. Please check your store configuration." },
-            { status: 400 },
-          )
-        } else if (fetchError.message.includes("certificate") || fetchError.message.includes("SSL")) {
-          return NextResponse.json({ error: "SSL certificate error. Please check your connection." }, { status: 400 })
+      let errorMessage = "Failed to connect to Shopify store"
+      let errorDetails = "Unknown error"
+
+      if (error instanceof Error) {
+        errorDetails = error.message
+
+        if (error.message.includes("Failed to fetch")) {
+          errorMessage = "Network error"
+          errorDetails = "Unable to connect to Shopify API. Please check your internet connection."
+        } else if (error.message.includes("401")) {
+          errorMessage = "Authentication failed"
+          errorDetails = "Invalid access token. Please check your Shopify app credentials."
+        } else if (error.message.includes("403")) {
+          errorMessage = "Access forbidden"
+          errorDetails = "Your Shopify app doesn't have the required permissions."
+        } else if (error.message.includes("404")) {
+          errorMessage = "Store not found"
+          errorDetails = "The specified Shopify store domain could not be found."
         }
       }
 
       return NextResponse.json(
         {
-          error: "Failed to connect to Shopify",
-          details: fetchError instanceof Error ? fetchError.message : "Network error",
+          error: errorMessage,
+          details: errorDetails,
         },
         { status: 500 },
       )
     }
   } catch (error) {
-    console.error("Error testing Shopify connection:", error)
+    console.error("💥 Critical error in test endpoint:", error)
     return NextResponse.json(
       {
         error: "Failed to test connection",
@@ -120,5 +85,56 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
       },
       { status: 500 },
     )
+  }
+}
+
+async function testShopifyConnection(shopDomain: string, accessToken: string) {
+  // Clean up shop domain
+  const cleanDomain = shopDomain.replace(/^https?:\/\//, "").replace(/\/$/, "")
+
+  // Test with a simple shop info endpoint
+  const url = `https://${cleanDomain}/admin/api/2023-10/shop.json`
+
+  console.log("🧪 Testing Shopify connection:", url)
+
+  const response = await fetch(url, {
+    method: "GET",
+    headers: {
+      "X-Shopify-Access-Token": accessToken,
+      "Content-Type": "application/json",
+      "User-Agent": "DeliveryOS/1.0",
+    },
+    signal: AbortSignal.timeout(15000), // 15 second timeout for test
+  })
+
+  console.log("📡 Test response status:", response.status)
+
+  if (!response.ok) {
+    const errorText = await response.text()
+    console.error("❌ Test failed:", response.status, errorText)
+
+    switch (response.status) {
+      case 401:
+        throw new Error(`Authentication failed (401): Invalid access token`)
+      case 403:
+        throw new Error(`Access forbidden (403): Insufficient permissions`)
+      case 404:
+        throw new Error(`Store not found (404): Check your shop domain`)
+      case 429:
+        throw new Error(`Rate limit exceeded (429): Too many requests`)
+      default:
+        throw new Error(`Shopify API error (${response.status}): ${errorText}`)
+    }
+  }
+
+  const data = await response.json()
+  console.log("✅ Test successful, shop info:", data.shop?.name)
+
+  return {
+    shop_name: data.shop?.name,
+    shop_domain: data.shop?.domain,
+    shop_email: data.shop?.email,
+    currency: data.shop?.currency,
+    timezone: data.shop?.timezone,
   }
 }
