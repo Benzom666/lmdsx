@@ -3,7 +3,7 @@ import { supabase } from "@/lib/supabase"
 
 export async function POST(request: NextRequest) {
   try {
-    const { orderId, newStatus, driverId, reason } = await request.json()
+    const { orderId, newStatus, driverId, reason, trackingNumber, trackingCompany } = await request.json()
 
     if (!orderId || !newStatus || !driverId) {
       return NextResponse.json({ error: "Missing required fields" }, { status: 400 })
@@ -49,6 +49,37 @@ export async function POST(request: NextRequest) {
       // Don't fail the request if logging fails
     }
 
+    // If changing to delivered status and this is a Shopify order, fulfill it in Shopify
+    let shopifyFulfillmentResult = null
+    if (newStatus === "delivered" && currentOrder.shopify_order_id && currentOrder.shopify_connection_id) {
+      try {
+        console.log("🏪 Order delivered - updating Shopify fulfillment")
+
+        const fulfillmentResponse = await fetch("/api/shopify/fulfill-order", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            orderId: orderId,
+            trackingNumber: trackingNumber || `DEL-${orderId.slice(-8)}`,
+            trackingCompany: trackingCompany || "Local Delivery",
+            notifyCustomer: true,
+          }),
+        })
+
+        if (fulfillmentResponse.ok) {
+          shopifyFulfillmentResult = await fulfillmentResponse.json()
+          console.log("✅ Shopify fulfillment updated successfully")
+        } else {
+          console.error("❌ Failed to update Shopify fulfillment:", await fulfillmentResponse.text())
+        }
+      } catch (shopifyError) {
+        console.error("❌ Error updating Shopify fulfillment:", shopifyError)
+        // Don't fail the main request if Shopify update fails
+      }
+    }
+
     // If changing to failed status, handle any existing delivery records
     if (newStatus === "failed" && currentOrder.status === "delivered") {
       // Create a delivery failure record to document the status change
@@ -75,6 +106,8 @@ export async function POST(request: NextRequest) {
       message: "Order status updated successfully",
       oldStatus: currentOrder.status,
       newStatus: newStatus,
+      shopifyUpdated: shopifyFulfillmentResult?.shopify_updated || false,
+      shopifyFulfillmentId: shopifyFulfillmentResult?.fulfillment_id,
     })
   } catch (error) {
     console.error("Error updating order status:", error)
