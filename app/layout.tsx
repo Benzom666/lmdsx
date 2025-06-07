@@ -27,7 +27,6 @@ export const metadata: Metadata = {
     title: "Delivery System",
     description: "Advanced delivery management system with route optimization",
   },
-    generator: 'v0.dev'
 }
 
 export default function RootLayout({
