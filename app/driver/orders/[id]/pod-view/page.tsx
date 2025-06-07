@@ -290,12 +290,68 @@ export default function PODViewPage() {
               {podData.photo_url && (
                 <div>
                   <p className="text-sm font-medium text-muted-foreground mb-2">Photo Evidence</p>
-                  <div className="border rounded-lg overflow-hidden">
-                    <img
-                      src={podData.photo_url || "/placeholder.svg"}
-                      alt="Delivery proof photo"
-                      className="w-full max-h-64 object-cover"
-                    />
+                  {(() => {
+                    try {
+                      // Try to parse as JSON array first
+                      const photoArray = JSON.parse(podData.photo_url)
+                      if (Array.isArray(photoArray) && photoArray.length > 0) {
+                        return (
+                          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                            {photoArray.map((photoUrl, index) => (
+                              <div key={index} className="border rounded-lg overflow-hidden bg-gray-50">
+                                <img
+                                  src={photoUrl || "/placeholder.svg"}
+                                  alt={`Delivery proof photo ${index + 1}`}
+                                  className="w-full h-48 object-cover"
+                                  onError={(e) => {
+                                    console.error(`Failed to load photo ${index + 1}:`, photoUrl)
+                                    e.currentTarget.src =
+                                      "/placeholder.svg?height=192&width=300&text=Photo+Not+Available"
+                                    e.currentTarget.className = "w-full h-48 object-contain bg-gray-100 p-4"
+                                  }}
+                                  onLoad={() => console.log(`Photo ${index + 1} loaded successfully:`, photoUrl)}
+                                />
+                                <div className="p-2 bg-white">
+                                  <p className="text-xs text-gray-600">
+                                    Photo {index + 1} of {photoArray.length}
+                                  </p>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )
+                      }
+                    } catch (error) {
+                      console.log("Photo URL is not JSON, treating as single URL:", podData.photo_url)
+                    }
+
+                    // Fallback for single photo URL
+                    return (
+                      <div className="border rounded-lg overflow-hidden bg-gray-50">
+                        <img
+                          src={podData.photo_url || "/placeholder.svg"}
+                          alt="Delivery proof photo"
+                          className="w-full max-h-64 object-cover"
+                          onError={(e) => {
+                            console.error("Failed to load image:", podData.photo_url)
+                            e.currentTarget.src = "/placeholder.svg?height=256&width=400&text=Photo+Not+Available"
+                            e.currentTarget.className = "w-full max-h-64 object-contain bg-gray-100 p-4"
+                          }}
+                          onLoad={() => console.log("Photo loaded successfully:", podData.photo_url)}
+                        />
+                      </div>
+                    )
+                  })()}
+                </div>
+              )}
+
+              {/* Show message if photo_url exists but is empty/null */}
+              {podData && !podData.photo_url && (
+                <div>
+                  <p className="text-sm font-medium text-muted-foreground mb-2">Photo Evidence</p>
+                  <div className="border rounded-lg p-4 bg-yellow-50 text-center">
+                    <Camera className="mx-auto h-8 w-8 text-yellow-600 mb-2" />
+                    <p className="text-sm text-yellow-800">No photos were captured for this delivery</p>
                   </div>
                 </div>
               )}

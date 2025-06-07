@@ -3,7 +3,7 @@
 import { usePathname, useRouter } from "next/navigation"
 import { cn } from "@/lib/utils"
 import { Badge } from "@/components/ui/badge"
-import { Home, Package, QrCode, User } from "lucide-react"
+import { Package, QrCode, User, Users } from "lucide-react"
 
 interface BottomNavigationProps {
   className?: string
@@ -15,10 +15,10 @@ export function BottomNavigation({ className }: BottomNavigationProps) {
 
   const navigationItems = [
     {
-      name: "Home",
+      name: "Orders",
       href: "/driver/orders",
-      icon: Home,
-      badge: null,
+      icon: Package,
+      badge: "3", // This could be dynamic based on active orders
     },
     {
       name: "Scanner",
@@ -27,10 +27,10 @@ export function BottomNavigation({ className }: BottomNavigationProps) {
       badge: null,
     },
     {
-      name: "Orders",
-      href: "/driver/orders",
-      icon: Package,
-      badge: "3", // This could be dynamic based on active orders
+      name: "Invitations",
+      href: "/driver/invitations",
+      icon: Users,
+      badge: null,
     },
     {
       name: "Profile",
