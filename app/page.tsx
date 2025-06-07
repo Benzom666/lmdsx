@@ -21,6 +21,7 @@ export default function AuthPage() {
   const [error, setError] = useState<string | null>(null)
   const [showSignup, setShowSignup] = useState<boolean>(false)
   const [showPassword, setShowPassword] = useState<boolean>(false)
+  const [keepLoggedIn, setKeepLoggedIn] = useState<boolean>(false)
 
   // Super Admin mode state
   const [superAdminOpen, setSuperAdminOpen] = useState<boolean>(false)
@@ -160,9 +161,14 @@ export default function AuthPage() {
 
       console.log("🔐 Attempting sign in:", email)
 
+      // Configure session persistence based on "Keep me logged in" checkbox
       const { data, error: signInError } = await supabase.auth.signInWithPassword({
         email,
         password,
+        options: {
+          // Use 'local' for persistent login, 'session' for session-only
+          persistSession: keepLoggedIn ? "local" : "session",
+        },
       })
 
       if (signInError) {
@@ -275,6 +281,7 @@ export default function AuthPage() {
     setConfirmPassword("")
     setFirstName("")
     setLastName("")
+    setKeepLoggedIn(false)
     setError(null)
   }
 
@@ -421,6 +428,22 @@ export default function AuthPage() {
                         </button>
                       </div>
                     </div>
+                  </div>
+
+                  <div className="flex items-center space-x-2">
+                    <input
+                      id="keep-logged-in"
+                      type="checkbox"
+                      checked={keepLoggedIn}
+                      onChange={(e) => setKeepLoggedIn(e.target.checked)}
+                      className="w-4 h-4 text-cyan-600 bg-slate-900/50 border-slate-600 rounded focus:ring-cyan-500 focus:ring-2"
+                    />
+                    <Label
+                      htmlFor="keep-logged-in"
+                      className="text-slate-300 dark:text-slate-400 text-sm font-medium cursor-pointer"
+                    >
+                      Keep me logged in
+                    </Label>
                   </div>
 
                   <Button
@@ -576,6 +599,24 @@ export default function AuthPage() {
               <Truck className="w-6 h-6 mx-auto mb-2 text-pink-400 dark:text-pink-300" />
               <p className="text-xs">Reliable</p>
             </div>
+          </div>
+
+          {/* API Documentation Link */}
+          <div className="mt-6 text-center">
+            <a
+              href="/api-docs"
+              className="inline-flex items-center gap-2 text-slate-400 dark:text-slate-500 hover:text-cyan-400 dark:hover:text-cyan-300 text-sm transition-colors duration-300"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
+                />
+              </svg>
+              API Integration Documentation
+            </a>
           </div>
         </div>
       </div>
