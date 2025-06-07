@@ -66,6 +66,7 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
         ...baseItems,
         { name: "Orders", href: "/admin/orders", icon: Package },
         { name: "Drivers", href: "/admin/drivers", icon: Users },
+        { name: "Integrations", href: "/admin/integrations", icon: Settings },
       ]
     }
 
