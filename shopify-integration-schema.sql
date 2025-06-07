@@ -1,0 +1,220 @@
+-- Create Shopify connections table
+CREATE TABLE IF NOT EXISTS shopify_connections (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  shop_domain VARCHAR(255) NOT NULL UNIQUE,
+  access_token TEXT NOT NULL,
+  webhook_secret VARCHAR(255),
+  is_active BOOLEAN DEFAULT true,
+  last_sync TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  orders_synced INTEGER DEFAULT 0,
+  settings JSONB DEFAULT '{
+    "auto_create_orders": true,
+    "auto_assign_drivers": false,
+    "sync_order_status": true,
+    "notification_emails": [],
+    "fulfillment_service": false
+  }'::jsonb,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- Create Shopify orders table
+CREATE TABLE IF NOT EXISTS shopify_orders (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  shopify_connection_id UUID REFERENCES shopify_connections(id) ON DELETE CASCADE,
+  shopify_order_id VARCHAR(255) NOT NULL,
+  order_number VARCHAR(255),
+  customer_name VARCHAR(255),
+  customer_email VARCHAR(255),
+  customer_phone VARCHAR(50),
+  shipping_address JSONB,
+  line_items JSONB,
+  total_price DECIMAL(10,2),
+  fulfillment_status VARCHAR(50),
+  financial_status VARCHAR(50),
+  created_at TIMESTAMP WITH TIME ZONE,
+  synced_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  UNIQUE(shopify_connection_id, shopify_order_id)
+);
+
+-- Create Shopify webhook logs table for debugging
+CREATE TABLE IF NOT EXISTS shopify_webhook_logs (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  shopify_connection_id UUID REFERENCES shopify_connections(id) ON DELETE CASCADE,
+  topic VARCHAR(100) NOT NULL,
+  shop_domain VARCHAR(255) NOT NULL,
+  order_id VARCHAR(255),
+  payload JSONB,
+  processed BOOLEAN DEFAULT false,
+  error_message TEXT,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- Create indexes for better performance
+CREATE INDEX IF NOT EXISTS idx_shopify_connections_shop_domain ON shopify_connections(shop_domain);
+CREATE INDEX IF NOT EXISTS idx_shopify_connections_is_active ON shopify_connections(is_active);
+CREATE INDEX IF NOT EXISTS idx_shopify_orders_connection_id ON shopify_orders(shopify_connection_id);
+CREATE INDEX IF NOT EXISTS idx_shopify_orders_shopify_order_id ON shopify_orders(shopify_order_id);
+CREATE INDEX IF NOT EXISTS idx_shopify_orders_created_at ON shopify_orders(created_at);
+CREATE INDEX IF NOT EXISTS idx_shopify_webhook_logs_connection_id ON shopify_webhook_logs(shopify_connection_id);
+CREATE INDEX IF NOT EXISTS idx_shopify_webhook_logs_created_at ON shopify_webhook_logs(created_at);
+
+-- Add source and external_order_id columns to orders table if they don't exist
+ALTER TABLE orders 
+ADD COLUMN IF NOT EXISTS source VARCHAR(50) DEFAULT 'manual',
+ADD COLUMN IF NOT EXISTS external_order_id VARCHAR(255);
+
+-- Create index for external order lookups
+CREATE INDEX IF NOT EXISTS idx_orders_external_order_id ON orders(external_order_id, source);
+
+-- Enable Row Level Security
+ALTER TABLE shopify_connections ENABLE ROW LEVEL SECURITY;
+ALTER TABLE shopify_orders ENABLE ROW LEVEL SECURITY;
+ALTER TABLE shopify_webhook_logs ENABLE ROW LEVEL SECURITY;
+
+-- Create RLS policies for Shopify connections
+CREATE POLICY "Admins can manage their own Shopify connections" ON shopify_connections
+  FOR ALL USING (
+    admin_id IN (
+      SELECT user_id FROM user_profiles 
+      WHERE user_id = auth.uid() AND role = 'admin'
+    )
+  );
+
+-- Create RLS policies for Shopify orders
+CREATE POLICY "Admins can view their Shopify orders" ON shopify_orders
+  FOR SELECT USING (
+    shopify_connection_id IN (
+      SELECT id FROM shopify_connections 
+      WHERE admin_id IN (
+        SELECT user_id FROM user_profiles 
+        WHERE user_id = auth.uid() AND role = 'admin'
+      )
+    )
+  );
+
+-- Create RLS policies for Shopify webhook logs
+CREATE POLICY "Admins can view their Shopify webhook logs" ON shopify_webhook_logs
+  FOR SELECT USING (
+    shopify_connection_id IN (
+      SELECT id FROM shopify_connections 
+      WHERE admin_id IN (
+        SELECT user_id FROM user_profiles 
+        WHERE user_id = auth.uid() AND role = 'admin'
+      )
+    )
+  );
+
+-- Update trigger for shopify_connections
+CREATE OR REPLACE FUNCTION update_shopify_connections_updated_at()
+RETURNS TRIGGER AS $$
+BEGIN
+  NEW.updated_at = NOW();
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trigger_update_shopify_connections_updated_at
+  BEFORE UPDATE ON shopify_connections
+  FOR EACH ROW
+  EXECUTE FUNCTION update_shopify_connections_updated_at();
+
+-- Create function to update updated_at timestamp
+CREATE OR REPLACE FUNCTION update_shopify_updated_at_column()
+RETURNS TRIGGER AS $$
+BEGIN
+  NEW.updated_at = NOW();
+  RETURN NEW;
+END;
+$$ language 'plpgsql';
+
+-- Create triggers for updated_at
+CREATE TRIGGER update_shopify_connections_updated_at 
+  BEFORE UPDATE ON shopify_connections 
+  FOR EACH ROW EXECUTE FUNCTION update_shopify_updated_at_column();
+
+CREATE TRIGGER update_shopify_orders_updated_at 
+  BEFORE UPDATE ON shopify_orders 
+  FOR EACH ROW EXECUTE FUNCTION update_shopify_updated_at_column();
+
+-- Create function to automatically sync order status back to Shopify
+CREATE OR REPLACE FUNCTION sync_order_status_to_shopify()
+RETURNS TRIGGER AS $$
+DECLARE
+  shopify_conn RECORD;
+  shopify_order_num VARCHAR(255);
+BEGIN
+  -- Check if this is a Shopify-originated order
+  IF NEW.order_number LIKE 'SHOP-%' THEN
+    -- Extract the Shopify order number
+    shopify_order_num := SUBSTRING(NEW.order_number FROM 6);
+    
+    -- Get the Shopify connection details
+    SELECT sc.* INTO shopify_conn
+    FROM shopify_connections sc
+    JOIN shopify_orders so ON so.shopify_connection_id = sc.id
+    WHERE so.order_number = shopify_order_num
+    AND sc.is_active = true
+    AND sc.settings->>'sync_order_status' = 'true'
+    LIMIT 1;
+    
+    -- If we found a connection and the order status changed to delivered
+    IF FOUND AND NEW.status = 'delivered' AND OLD.status != 'delivered' THEN
+      -- Log this for external processing (webhook or background job)
+      INSERT INTO shopify_webhook_logs (
+        shopify_connection_id,
+        topic,
+        shop_domain,
+        order_id,
+        payload,
+        processed
+      ) VALUES (
+        shopify_conn.id,
+        'fulfillment/create',
+        shopify_conn.shop_domain,
+        shopify_order_num,
+        jsonb_build_object(
+          'order_number', shopify_order_num,
+          'delivery_status', NEW.status,
+          'completed_at', NEW.completed_at,
+          'driver_id', NEW.driver_id
+        ),
+        false
+      );
+    END IF;
+  END IF;
+  
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Create trigger for order status sync
+CREATE TRIGGER sync_order_status_to_shopify_trigger
+  AFTER UPDATE ON orders
+  FOR EACH ROW
+  WHEN (OLD.status IS DISTINCT FROM NEW.status)
+  EXECUTE FUNCTION sync_order_status_to_shopify();
+
+-- Insert sample data for testing (optional)
+-- This will be removed in production
+INSERT INTO shopify_connections (
+  admin_id, 
+  shop_domain, 
+  access_token, 
+  webhook_secret, 
+  is_active,
+  settings
+) VALUES (
+  '00000000-0000-0000-0000-000000000000',
+  'demo-store.myshopify.com',
+  'encrypted_demo_token',
+  'demo_webhook_secret',
+  false,
+  '{
+    "auto_create_orders": true,
+    "auto_assign_drivers": false,
+    "sync_order_status": true,
+    "notification_emails": ["admin@example.com"],
+    "fulfillment_service": false
+  }'::jsonb
+) ON CONFLICT DO NOTHING;
