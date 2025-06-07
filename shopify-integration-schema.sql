@@ -76,10 +76,20 @@ ADD COLUMN IF NOT EXISTS external_order_id VARCHAR(255);
 -- Create index for external order lookups
 CREATE INDEX IF NOT EXISTS idx_orders_external_order_id ON orders(external_order_id, source);
 
+-- Grant permissions to service_role for all Shopify tables
+GRANT ALL ON shopify_connections TO service_role;
+GRANT ALL ON shopify_orders TO service_role;
+GRANT ALL ON shopify_webhook_logs TO service_role;
+
 -- Enable Row Level Security
 ALTER TABLE shopify_connections ENABLE ROW LEVEL SECURITY;
 ALTER TABLE shopify_orders ENABLE ROW LEVEL SECURITY;
 ALTER TABLE shopify_webhook_logs ENABLE ROW LEVEL SECURITY;
+
+-- Drop existing policies if they exist
+DROP POLICY IF EXISTS "Admins can manage their own Shopify connections" ON shopify_connections;
+DROP POLICY IF EXISTS "Admins can manage their Shopify orders" ON shopify_orders;
+DROP POLICY IF EXISTS "Admins can manage their Shopify webhook logs" ON shopify_webhook_logs;
 
 -- Create RLS policies for Shopify connections
 CREATE POLICY "Admins can manage their own Shopify connections" ON shopify_connections
@@ -95,9 +105,17 @@ CREATE POLICY "Admins can manage their own Shopify connections" ON shopify_conne
     )
   );
 
--- Create RLS policies for Shopify orders
-CREATE POLICY "Admins can view their Shopify orders" ON shopify_orders
-  FOR SELECT USING (
+-- Create RLS policies for Shopify orders - Allow both SELECT and INSERT for admins
+CREATE POLICY "Admins can manage their Shopify orders" ON shopify_orders
+  FOR ALL USING (
+    shopify_connection_id IN (
+      SELECT id FROM shopify_connections
+      WHERE admin_id IN (
+        SELECT user_id FROM user_profiles
+        WHERE user_id = auth.uid() AND role = 'admin'
+      )
+    )
+  ) WITH CHECK (
     shopify_connection_id IN (
       SELECT id FROM shopify_connections
       WHERE admin_id IN (
@@ -108,8 +126,16 @@ CREATE POLICY "Admins can view their Shopify orders" ON shopify_orders
   );
 
 -- Create RLS policies for Shopify webhook logs
-CREATE POLICY "Admins can view their Shopify webhook logs" ON shopify_webhook_logs
-  FOR SELECT USING (
+CREATE POLICY "Admins can manage their Shopify webhook logs" ON shopify_webhook_logs
+  FOR ALL USING (
+    shopify_connection_id IN (
+      SELECT id FROM shopify_connections
+      WHERE admin_id IN (
+        SELECT user_id FROM user_profiles
+        WHERE user_id = auth.uid() AND role = 'admin'
+      )
+    )
+  ) WITH CHECK (
     shopify_connection_id IN (
       SELECT id FROM shopify_connections
       WHERE admin_id IN (
@@ -129,6 +155,9 @@ END;
 $$ language 'plpgsql';
 
 -- Create triggers for updated_at
+DROP TRIGGER IF EXISTS update_shopify_connections_updated_at ON shopify_connections;
+DROP TRIGGER IF EXISTS update_shopify_orders_updated_at ON shopify_orders;
+
 CREATE TRIGGER update_shopify_connections_updated_at
   BEFORE UPDATE ON shopify_connections
   FOR EACH ROW EXECUTE FUNCTION update_shopify_updated_at_column();
@@ -185,6 +214,7 @@ END;
 $$ LANGUAGE plpgsql;
 
 -- Create trigger for order status sync
+DROP TRIGGER IF EXISTS sync_order_status_to_shopify_trigger ON orders;
 CREATE TRIGGER sync_order_status_to_shopify_trigger
   AFTER UPDATE ON orders
   FOR EACH ROW
