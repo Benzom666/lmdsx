@@ -1,21 +1,51 @@
-import { NextResponse } from "next/server"
-import { createClient } from "@supabase/supabase-js"
+import { type NextRequest, NextResponse } from "next/server"
+import { createServerSupabaseClient } from "@/lib/supabase" // Ensure this is correctly imported
 
-const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!)
-
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
-    const { data: orders, error } = await supabase
-      .from("shopify_orders")
-      .select("*")
-      .order("created_at", { ascending: false })
-      .limit(50)
+    const supabaseServer = createServerSupabaseClient()
 
-    if (error) throw error
+    // Get the current user
+    const {
+      data: { user },
+      error: authError,
+    } = await supabaseServer.auth.getUser()
+
+    if (authError || !user) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+    }
+
+    // Get user profile to check role
+    const { data: profile, error: profileError } = await supabaseServer
+      .from("user_profiles")
+      .select("role")
+      .eq("user_id", user.id)
+      .single()
+
+    if (profileError || profile?.role !== "admin") {
+      return NextResponse.json({ error: "Forbidden" }, { status: 403 })
+    }
+
+    // Fetch recent Shopify orders for this admin
+    const { data: orders, error } = await supabaseServer
+      .from("shopify_orders")
+      .select(
+        `
+        *,
+        shopify_connections!inner(admin_id)
+      `,
+      )
+      .eq("shopify_connections.admin_id", user.id)
+      .order("created_at", { ascending: false })
+      .limit(20)
+
+    if (error) {
+      throw error
+    }
 
     return NextResponse.json({ orders: orders || [] })
   } catch (error) {
     console.error("Error fetching Shopify orders:", error)
-    return NextResponse.json({ error: "Failed to fetch orders" }, { status: 500 })
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 })
   }
 }

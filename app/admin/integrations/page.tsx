@@ -38,6 +38,8 @@ import {
   RefreshCw,
 } from "lucide-react"
 
+import ShopifyIntegrationPage from "./shopify/page"
+
 interface ApiKey {
   id: string
   name: string
@@ -335,11 +337,12 @@ export default function IntegrationsPage() {
 
         {/* Main Content Tabs */}
         <Tabs defaultValue="keys" className="space-y-6">
-          <TabsList className="grid w-full grid-cols-4">
+          <TabsList className="grid w-full grid-cols-5">
             <TabsTrigger value="keys">API Keys</TabsTrigger>
             <TabsTrigger value="testing">Testing</TabsTrigger>
             <TabsTrigger value="docs">Documentation</TabsTrigger>
             <TabsTrigger value="guides">Integration Guides</TabsTrigger>
+            <TabsTrigger value="shopify">Shopify</TabsTrigger>
           </TabsList>
 
           {/* API Keys Tab */}
@@ -871,6 +874,11 @@ response = requests.post('/api/orders',
                 </Tabs>
               </CardContent>
             </Card>
+          </TabsContent>
+
+          {/* Shopify Tab */}
+          <TabsContent value="shopify" className="space-y-6">
+            <ShopifyIntegrationPage />
           </TabsContent>
         </Tabs>
       </div>
