@@ -118,36 +118,46 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
 
     console.log(`🔄 Syncing orders for shop: ${connection.shop_domain}`)
 
-    // In production, we'll use real Shopify API
+    // Remove the mock order generation and only use real Shopify API
     let orders: any[] = []
     let isRealShopifyData = false
 
-    if (process.env.NODE_ENV === "production" && connection.access_token.startsWith("shpat_")) {
+    if (connection.access_token.startsWith("shpat_")) {
       try {
         console.log("🌐 Fetching real orders from Shopify API...")
         orders = await fetchShopifyOrders(connection.shop_domain, connection.access_token)
         isRealShopifyData = true
         console.log(`✅ Fetched ${orders.length} real orders from Shopify`)
       } catch (shopifyError) {
-        console.log("⚠️ Shopify API failed, falling back to demo data:", shopifyError)
-        orders = generateMockShopifyOrders(connection.shop_domain)
-        isRealShopifyData = false
+        console.error("❌ Shopify API failed:", shopifyError)
+        return NextResponse.json(
+          {
+            error: "Failed to fetch orders from Shopify",
+            details: shopifyError instanceof Error ? shopifyError.message : "Unknown error",
+          },
+          { status: 500 },
+        )
       }
     } else {
-      console.log("🎭 Using demo data (development mode or invalid token)")
-      orders = generateMockShopifyOrders(connection.shop_domain)
-      isRealShopifyData = false
+      console.log("❌ Invalid Shopify access token - must start with 'shpat_'")
+      return NextResponse.json(
+        {
+          error: "Invalid Shopify access token",
+          details: "Access token must be a valid Shopify private app token starting with 'shpat_'",
+        },
+        { status: 400 },
+      )
     }
 
     if (orders.length === 0) {
-      console.log("ℹ️ No orders to sync")
+      console.log("ℹ️ No orders found in Shopify store")
       return NextResponse.json({
         success: true,
         synced_count: 0,
         total_orders: 0,
         error_count: 0,
-        message: "No new orders to sync",
-        data_source: isRealShopifyData ? "shopify_api" : "demo",
+        message: "No orders found in Shopify store",
+        data_source: "shopify_api",
       })
     }
 
@@ -241,9 +251,7 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
       console.error("⚠️ Error updating connection stats:", updateError)
     }
 
-    const message = isRealShopifyData
-      ? `Successfully synced ${syncedCount} orders from Shopify${errorCount > 0 ? ` (${errorCount} errors)` : ""}`
-      : `Successfully synced ${syncedCount} demo orders${errorCount > 0 ? ` (${errorCount} errors)` : ""} (Demo Mode)`
+    const message = `Successfully synced ${syncedCount} orders from Shopify${errorCount > 0 ? ` (${errorCount} errors)` : ""}`
 
     console.log(`🎉 Sync completed: ${syncedCount} synced, ${errorCount} errors`)
     return NextResponse.json({
@@ -252,7 +260,7 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
       total_orders: orders.length,
       error_count: errorCount,
       message,
-      data_source: isRealShopifyData ? "shopify_api" : "demo",
+      data_source: "shopify_api",
     })
   } catch (error) {
     console.error("💥 Critical error in sync endpoint:", error)
@@ -290,59 +298,34 @@ async function fetchShopifyOrders(shopDomain: string, accessToken: string): Prom
   return data.orders || []
 }
 
-function generateMockShopifyOrders(shopDomain: string): any[] {
-  console.log("🎭 Generating mock orders for:", shopDomain)
-  const currentDate = new Date()
-  const orders = []
-  for (let i = 1; i <= 5; i++) {
-    const orderId = Math.floor(Math.random() * 1000000) + 1000000
-    const orderDate = new Date(currentDate.getTime() - i * 24 * 60 * 60 * 1000)
-    orders.push({
-      id: orderId,
-      order_number: `${1000 + i}`,
-      name: `#${1000 + i}`,
-      created_at: orderDate.toISOString(),
-      updated_at: orderDate.toISOString(),
-      total_price: (Math.random() * 200 + 50).toFixed(2),
-      financial_status: "paid",
-      fulfillment_status: "unfulfilled",
-      customer: {
-        id: Math.floor(Math.random() * 100000),
-        first_name: ["John", "Jane", "Mike", "Sarah", "David"][Math.floor(Math.random() * 5)],
-        last_name: ["Smith", "Johnson", "Williams", "Brown", "Davis"][Math.floor(Math.random() * 5)],
-        email: `customer${i}@example.com`,
-        phone: `+1-555-${String(Math.floor(Math.random() * 9000) + 1000)}`,
-      },
-      shipping_address: {
-        first_name: ["John", "Jane", "Mike", "Sarah", "David"][Math.floor(Math.random() * 5)],
-        last_name: ["Smith", "Johnson", "Williams", "Brown", "Davis"][Math.floor(Math.random() * 5)],
-        address1: `${Math.floor(Math.random() * 9999) + 1} Main St`,
-        address2: Math.random() > 0.5 ? `Apt ${Math.floor(Math.random() * 100) + 1}` : null,
-        city: ["New York", "Los Angeles", "Chicago", "Houston", "Phoenix"][Math.floor(Math.random() * 5)],
-        province: "NY",
-        zip: String(Math.floor(Math.random() * 90000) + 10000),
-        country: "United States",
-        country_code: "US",
-      },
-      line_items: [
-        {
-          id: Math.floor(Math.random() * 1000000),
-          title: ["T-Shirt", "Jeans", "Sneakers", "Hoodie", "Cap"][Math.floor(Math.random() * 5)],
-          quantity: Math.floor(Math.random() * 3) + 1,
-          price: (Math.random() * 100 + 20).toFixed(2),
-        },
-      ],
-      note: Math.random() > 0.5 ? "Please handle with care" : "",
-    })
-  }
-  console.log(`🎭 Generated ${orders.length} mock orders`)
-  return orders
-}
-
 async function createDeliveryOrder(shopifyOrder: any, connection: any, adminId: string) {
   try {
+    console.log(`📦 Creating delivery order for Shopify order: ${shopifyOrder.order_number || shopifyOrder.id}`)
+
+    // Generate a base order number
+    const baseOrderNumber = `SH-${shopifyOrder.order_number || shopifyOrder.id}`
+
+    // Check if an order with this number already exists
+    const { data: existingOrder, error: checkError } = await supabaseServiceRole
+      .from("orders")
+      .select("id")
+      .eq("order_number", baseOrderNumber)
+      .maybeSingle()
+
+    if (checkError) {
+      console.error("❌ Error checking for existing order:", checkError)
+    }
+
+    // If order number already exists, make it unique by adding a timestamp suffix
+    let orderNumber = baseOrderNumber
+    if (existingOrder) {
+      const timestamp = new Date().getTime().toString().slice(-6)
+      orderNumber = `${baseOrderNumber}-${timestamp}`
+      console.log(`⚠️ Order number ${baseOrderNumber} already exists, using ${orderNumber} instead`)
+    }
+
     const deliveryOrderData = {
-      order_number: `SH-${shopifyOrder.order_number || shopifyOrder.id}`,
+      order_number: orderNumber,
       customer_name: shopifyOrder.customer
         ? `${shopifyOrder.customer.first_name || ""} ${shopifyOrder.customer.last_name || ""}`.trim() ||
           "Unknown Customer"
@@ -360,6 +343,9 @@ async function createDeliveryOrder(shopifyOrder: any, connection: any, adminId: 
       created_by: adminId, // Use created_by instead of admin_id
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
+      // Store Shopify connection info for later fulfillment updates
+      shopify_order_id: shopifyOrder.id.toString(),
+      shopify_connection_id: connection.id,
     }
 
     const { error } = await supabaseServiceRole.from("orders").insert(deliveryOrderData)
@@ -367,7 +353,7 @@ async function createDeliveryOrder(shopifyOrder: any, connection: any, adminId: 
       console.error("❌ Error creating delivery order:", error)
       throw error
     } else {
-      console.log(`📦 Created delivery order for Shopify order: ${shopifyOrder.order_number || shopifyOrder.id}`)
+      console.log(`✅ Created delivery order: ${orderNumber}`)
     }
   } catch (error) {
     console.error("❌ Error in createDeliveryOrder:", error)

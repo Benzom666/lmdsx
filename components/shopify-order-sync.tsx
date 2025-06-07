@@ -1,182 +1,72 @@
 "use client"
 
-import { useState } from "react"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
-import { Badge } from "@/components/ui/badge"
-import { Progress } from "@/components/ui/progress"
-import { useToast } from "@/components/ui/use-toast"
-import { RefreshCw, Package, CheckCircle, AlertTriangle } from "lucide-react"
-import { ShopifyUnfulfilledSync } from "./shopify-unfulfilled-sync"
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { toast } from "@/components/ui/use-toast"
+import { useState } from "react"
 
-interface ShopifyOrderSyncProps {
-  connectionId: string
-  shopDomain: string
-  onSyncComplete?: () => void
+type DataSourceResult = {
+  data_source: "shopify_api" | "demo_data" | null
+  synced_count: number
+  error_count: number
 }
 
-export function ShopifyOrderSync({ connectionId, shopDomain, onSyncComplete }: ShopifyOrderSyncProps) {
-  const { toast } = useToast()
-  const [syncing, setSyncing] = useState(false)
-  const [progress, setProgress] = useState(0)
-  const [syncResult, setSyncResult] = useState<any>(null)
+export function ShopifyOrderSync() {
+  const [loading, setLoading] = useState(false)
 
-  const syncOrders = async () => {
-    setSyncing(true)
-    setProgress(10)
-    setSyncResult(null)
-
+  const syncShopifyOrders = async () => {
+    setLoading(true)
     try {
-      // Get auth headers for the request
-      const {
-        data: { session },
-      } = await (window as any).supabase.auth.getSession()
-
-      if (!session) {
-        throw new Error("Authentication required")
-      }
-
-      const headers = {
-        Authorization: `Bearer ${session.access_token}`,
-        "Content-Type": "application/json",
-      }
-
-      // Simulate progress
-      const progressInterval = setInterval(() => {
-        setProgress((prev) => {
-          if (prev >= 90) {
-            clearInterval(progressInterval)
-            return 90
-          }
-          return prev + 10
-        })
-      }, 500)
-
-      // Call the sync endpoint
-      const response = await fetch(`/api/integrations/shopify/${connectionId}/sync`, {
+      const response = await fetch("/api/sync-shopify-orders", {
         method: "POST",
-        headers,
+        headers: {
+          "Content-Type": "application/json",
+        },
       })
-
-      clearInterval(progressInterval)
-      setProgress(100)
 
       if (!response.ok) {
-        const error = await response.json()
-        throw new Error(error.error || error.details || "Failed to sync orders")
+        throw new Error(`HTTP error! status: ${response.status}`)
       }
 
-      const result = await response.json()
-      setSyncResult(result)
+      const result: DataSourceResult = await response.json()
 
-      toast({
-        title: "Sync Completed",
-        description: result.message || `Successfully synced ${result.synced_count} orders`,
-      })
-
-      if (onSyncComplete) {
-        onSyncComplete()
+      if (result.data_source === "shopify_api") {
+        toast({
+          title: "✅ Orders Synced Successfully",
+          description: `Synced ${result.synced_count} real orders from Shopify${result.error_count > 0 ? ` (${result.error_count} errors)` : ""}`,
+        })
+      } else {
+        toast({
+          title: "❌ Sync Failed",
+          description: "Unable to connect to Shopify API",
+          variant: "destructive",
+        })
       }
     } catch (error) {
-      console.error("Error syncing orders:", error)
+      console.error("Failed to sync orders:", error)
       toast({
-        title: "Sync Failed",
-        description: error instanceof Error ? error.message : "Failed to sync orders",
+        title: "❌ Sync Failed",
+        description: "Failed to sync orders. Please try again.",
         variant: "destructive",
       })
-      setSyncResult({
-        success: false,
-        error: error instanceof Error ? error.message : "Unknown error",
-      })
     } finally {
-      setSyncing(false)
+      setLoading(false)
     }
   }
 
   return (
-    <>
-      <Card className="mt-6">
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <Package className="h-5 w-5" />
-            Order Synchronization
-          </CardTitle>
-          <CardDescription>Sync all orders from {shopDomain} to your delivery system</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <div className="space-y-4">
-            {syncing ? (
-              <div className="space-y-2">
-                <div className="flex items-center justify-between">
-                  <span className="text-sm">Syncing orders...</span>
-                  <span className="text-sm font-medium">{progress}%</span>
-                </div>
-                <Progress value={progress} className="h-2" />
-              </div>
-            ) : syncResult ? (
-              <div className={`p-4 rounded-lg ${syncResult.success ? "bg-green-50" : "bg-red-50"}`}>
-                <div className="flex items-start gap-3">
-                  {syncResult.success ? (
-                    <CheckCircle className="h-5 w-5 text-green-500 mt-0.5" />
-                  ) : (
-                    <AlertTriangle className="h-5 w-5 text-red-500 mt-0.5" />
-                  )}
-                  <div>
-                    <h4 className={`font-medium ${syncResult.success ? "text-green-800" : "text-red-800"}`}>
-                      {syncResult.success ? "Sync Completed" : "Sync Failed"}
-                    </h4>
-                    <p className={`text-sm ${syncResult.success ? "text-green-700" : "text-red-700"}`}>
-                      {syncResult.message || syncResult.error || "Unknown result"}
-                    </p>
-                    {syncResult.success && (
-                      <div className="mt-2 space-y-1">
-                        <div className="flex items-center gap-2">
-                          <Badge variant="outline" className="bg-green-100 text-green-800 border-green-200">
-                            {syncResult.synced_count} orders synced
-                          </Badge>
-                          {syncResult.error_count > 0 && (
-                            <Badge variant="outline" className="bg-yellow-100 text-yellow-800 border-yellow-200">
-                              {syncResult.error_count} errors
-                            </Badge>
-                          )}
-                        </div>
-                        <p className="text-xs text-muted-foreground">
-                          Data source: {syncResult.data_source === "shopify_api" ? "Shopify API" : "Demo Data"}
-                        </p>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              </div>
-            ) : null}
-
-            <div className="flex justify-between items-center">
-              <div>
-                <p className="text-sm">
-                  This will sync all orders from Shopify. To create delivery orders automatically, enable "Auto Create
-                  Orders" in the connection settings.
-                </p>
-              </div>
-              <Button onClick={syncOrders} disabled={syncing}>
-                {syncing ? (
-                  <>
-                    <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
-                    Syncing...
-                  </>
-                ) : (
-                  <>
-                    <RefreshCw className="mr-2 h-4 w-4" />
-                    Sync All Orders
-                  </>
-                )}
-              </Button>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* Add the unfulfilled orders sync component */}
-      <ShopifyUnfulfilledSync connectionId={connectionId} shopDomain={shopDomain} onSyncComplete={onSyncComplete} />
-    </>
+    <Card>
+      <CardHeader>
+        <CardTitle>Shopify Order Sync</CardTitle>
+        <CardDescription>
+          Sync orders from your Shopify store. Only real orders from your connected Shopify store will be imported.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <Button disabled={loading} onClick={syncShopifyOrders}>
+          {loading ? "Syncing..." : "Sync Orders"}
+        </Button>
+      </CardContent>
+    </Card>
   )
 }

@@ -1,25 +1,12 @@
 "use client"
 
+import type React from "react"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
-import { useToast } from "@/components/ui/use-toast"
-import {
-  Package,
-  Calendar,
-  User,
-  Phone,
-  MapPin,
-  Truck,
-  FileText,
-  CheckCircle,
-  Edit,
-  UserCheck,
-  Trash2,
-  MoreHorizontal,
-  Printer,
-  Download,
-} from "lucide-react"
+import { Badge } from "@/components/ui/badge"
+import { LoadingSpinner } from "@/components/loading-spinner"
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -28,19 +15,50 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
-import { generateAndPrintLabel } from "@/lib/label-utils"
-import type { ReactNode } from "react"
+import {
+  Eye,
+  Edit,
+  Trash2,
+  MoreHorizontal,
+  MapPin,
+  Phone,
+  Mail,
+  Calendar,
+  User,
+  Store,
+  ExternalLink,
+} from "lucide-react"
+
+interface OrderWithActions {
+  id: string
+  order_number: string
+  customer_name: string
+  customer_phone?: string
+  customer_email?: string
+  pickup_address: string
+  delivery_address: string
+  status: string
+  priority: string
+  driver_id?: string
+  driver_name?: string
+  shop_domain?: string
+  shopify_order_number?: string
+  is_shopify_order?: boolean
+  created_at: string
+  updated_at: string
+}
 
 interface OrdersListProps {
-  orders: any[]
+  orders: OrderWithActions[]
   loading: boolean
   selectedOrders: Set<string>
   onSelectAll: (checked: boolean) => void
   onSelectOrder: (orderId: string, checked: boolean) => void
   allSelected: boolean
   someSelected: boolean
-  getStatusBadge: (status: string) => ReactNode
-  getPriorityBadge: (priority: string) => ReactNode
+  getStatusBadge: (status: string) => React.ReactNode
+  getPriorityBadge: (priority: string) => React.ReactNode
+  getStoreBadge?: (order: OrderWithActions) => React.ReactNode
   onBulkAssignDriver: (driverId: string) => void
   onBulkDelete: () => void
   router: any
@@ -56,51 +74,16 @@ export function OrdersList({
   someSelected,
   getStatusBadge,
   getPriorityBadge,
+  getStoreBadge,
   onBulkAssignDriver,
   onBulkDelete,
   router,
 }: OrdersListProps) {
-  const { toast } = useToast()
-
-  const handlePrintLabel = async (order: any) => {
-    try {
-      await generateAndPrintLabel(order)
-      toast({
-        title: "Success",
-        description: "Label sent to printer successfully",
-      })
-    } catch (error) {
-      console.error("Error printing label:", error)
-      toast({
-        title: "Print Error",
-        description: "Failed to print label. Please try again or check your printer settings.",
-        variant: "destructive",
-      })
-    }
-  }
-
-  const handleDownloadLabel = async (order: any) => {
-    try {
-      await generateAndPrintLabel(order, true)
-      toast({
-        title: "Success",
-        description: "Label downloaded successfully",
-      })
-    } catch (error) {
-      console.error("Error downloading label:", error)
-      toast({
-        title: "Download Error",
-        description: "Failed to download label. Please try again.",
-        variant: "destructive",
-      })
-    }
-  }
-
   if (loading) {
     return (
       <Card>
-        <CardContent className="pt-6">
-          <div className="text-center py-8">Loading orders...</div>
+        <CardContent className="flex items-center justify-center py-12">
+          <LoadingSpinner />
         </CardContent>
       </Card>
     )
@@ -109,11 +92,13 @@ export function OrdersList({
   if (orders.length === 0) {
     return (
       <Card>
-        <CardContent className="pt-6">
-          <div className="text-center py-12">
-            <Package className="mx-auto h-16 w-16 text-muted-foreground mb-4" />
-            <h3 className="text-lg font-medium mb-2">No orders found</h3>
-            <p className="text-muted-foreground">No orders match your current filters</p>
+        <CardContent className="flex flex-col items-center justify-center py-12">
+          <div className="text-center">
+            <h3 className="text-lg font-medium text-gray-900 mb-2">No orders found</h3>
+            <p className="text-gray-500 mb-4">
+              No orders match your current filters. Try adjusting your search criteria.
+            </p>
+            <Button onClick={() => router.push("/admin/orders/create")}>Create New Order</Button>
           </div>
         </CardContent>
       </Card>
@@ -122,123 +107,95 @@ export function OrdersList({
 
   return (
     <Card>
-      <CardContent className="pt-6">
-        <div className="space-y-4">
-          {/* Select All Header */}
-          <div className="flex items-center gap-3 pb-2 border-b">
-            <Checkbox
-              checked={allSelected}
-              onCheckedChange={onSelectAll}
-              ref={(el) => {
-                if (el) el.indeterminate = someSelected && !allSelected
-              }}
-            />
-            <span className="text-sm font-medium">
-              {allSelected ? "Deselect All" : someSelected ? "Select All" : "Select All"}
-            </span>
-            <span className="text-sm text-muted-foreground">({orders.length} orders)</span>
-          </div>
-
-          {/* Orders List */}
-          <div className="space-y-4">
-            {orders.map((order) => (
-              <div
-                key={order.id}
-                className="flex items-start gap-3 p-4 border rounded-lg hover:shadow-md transition-shadow"
-              >
-                <Checkbox
-                  checked={selectedOrders.has(order.id)}
-                  onCheckedChange={(checked) => onSelectOrder(order.id, checked as boolean)}
-                  className="mt-1"
-                />
-
-                <div className="flex-1 space-y-4">
-                  {/* Header */}
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-3">
-                      <h3 className="font-semibold text-lg">#{order.order_number}</h3>
-                      {getStatusBadge(order.status)}
-                      {getPriorityBadge(order.priority)}
-                    </div>
-                    <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                      <Calendar className="h-4 w-4" />
-                      {new Date(order.created_at).toLocaleDateString()}
-                    </div>
-                  </div>
-
-                  {/* Order Details */}
-                  <div className="grid md:grid-cols-3 gap-4">
-                    <div className="space-y-2">
-                      <div className="flex items-center gap-2">
-                        <User className="h-4 w-4 text-muted-foreground" />
-                        <span className="font-medium">{order.customer_name}</span>
+      <CardContent className="p-0">
+        <div className="overflow-x-auto">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead className="w-12">
+                  <Checkbox checked={allSelected} onCheckedChange={onSelectAll} aria-label="Select all orders" />
+                </TableHead>
+                <TableHead>Order</TableHead>
+                <TableHead>Customer</TableHead>
+                <TableHead>Store</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead>Priority</TableHead>
+                <TableHead>Driver</TableHead>
+                <TableHead>Created</TableHead>
+                <TableHead className="w-12"></TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {orders.map((order) => (
+                <TableRow key={order.id} className="hover:bg-gray-50">
+                  <TableCell>
+                    <Checkbox
+                      checked={selectedOrders.has(order.id)}
+                      onCheckedChange={(checked) => onSelectOrder(order.id, checked as boolean)}
+                      aria-label={`Select order ${order.order_number}`}
+                    />
+                  </TableCell>
+                  <TableCell>
+                    <div className="space-y-1">
+                      <div className="font-medium">{order.order_number}</div>
+                      {order.is_shopify_order && order.shopify_order_number && (
+                        <div className="text-xs text-muted-foreground flex items-center gap-1">
+                          <Store className="h-3 w-3" />
+                          Shopify {order.shopify_order_number}
+                        </div>
+                      )}
+                      <div className="text-sm text-muted-foreground flex items-center gap-1">
+                        <MapPin className="h-3 w-3" />
+                        {order.delivery_address.length > 50
+                          ? `${order.delivery_address.substring(0, 50)}...`
+                          : order.delivery_address}
                       </div>
+                    </div>
+                  </TableCell>
+                  <TableCell>
+                    <div className="space-y-1">
+                      <div className="font-medium">{order.customer_name}</div>
                       {order.customer_phone && (
-                        <div className="flex items-center gap-2">
-                          <Phone className="h-4 w-4 text-muted-foreground" />
-                          <span className="text-sm">{order.customer_phone}</span>
+                        <div className="text-sm text-muted-foreground flex items-center gap-1">
+                          <Phone className="h-3 w-3" />
+                          {order.customer_phone}
+                        </div>
+                      )}
+                      {order.customer_email && (
+                        <div className="text-sm text-muted-foreground flex items-center gap-1">
+                          <Mail className="h-3 w-3" />
+                          {order.customer_email}
                         </div>
                       )}
                     </div>
-                    <div className="space-y-2">
-                      <div className="flex items-start gap-2">
-                        <MapPin className="h-4 w-4 text-muted-foreground mt-0.5 flex-shrink-0" />
-                        <div>
-                          <p className="text-sm font-medium">Delivery Address</p>
-                          <p className="text-sm text-muted-foreground">{order.delivery_address}</p>
-                        </div>
-                      </div>
-                    </div>
-                    <div className="space-y-2">
-                      <div className="flex items-center gap-2">
-                        <Truck className="h-4 w-4 text-muted-foreground" />
-                        <div>
-                          <p className="text-sm font-medium">Driver</p>
-                          <p className="text-sm text-muted-foreground">{order.driver_name || "Unassigned"}</p>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Delivery Notes */}
-                  {order.delivery_notes && (
-                    <div className="p-3 bg-blue-50 rounded-lg">
-                      <p className="text-sm">
-                        <span className="font-medium">Notes:</span> {order.delivery_notes}
-                      </p>
-                    </div>
-                  )}
-
-                  {/* Action Buttons */}
-                  <div className="flex flex-wrap gap-2 pt-2 border-t">
-                    <Button variant="outline" size="sm" onClick={() => router.push(`/admin/orders/${order.id}`)}>
-                      <FileText className="mr-1 h-3 w-3" />
-                      View Details
-                    </Button>
-
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() =>
-                        window.open(
-                          `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(order.delivery_address)}`,
-                        )
-                      }
-                    >
-                      <MapPin className="mr-1 h-3 w-3" />
-                      View Location
-                    </Button>
-
-                    {order.status === "delivered" && (
-                      <Button variant="outline" size="sm" onClick={() => router.push(`/admin/orders/${order.id}/pod`)}>
-                        <CheckCircle className="mr-1 h-3 w-3" />
-                        View POD
-                      </Button>
+                  </TableCell>
+                  <TableCell>
+                    {getStoreBadge ? (
+                      getStoreBadge(order)
+                    ) : (
+                      <Badge variant="outline" className="bg-gray-50 text-gray-700 border-gray-200">
+                        Manual
+                      </Badge>
                     )}
-
+                  </TableCell>
+                  <TableCell>{getStatusBadge(order.status)}</TableCell>
+                  <TableCell>{getPriorityBadge(order.priority)}</TableCell>
+                  <TableCell>
+                    <div className="flex items-center gap-1">
+                      <User className="h-3 w-3 text-muted-foreground" />
+                      <span className="text-sm">{order.driver_name || "Unassigned"}</span>
+                    </div>
+                  </TableCell>
+                  <TableCell>
+                    <div className="flex items-center gap-1 text-sm text-muted-foreground">
+                      <Calendar className="h-3 w-3" />
+                      {new Date(order.created_at).toLocaleDateString()}
+                    </div>
+                  </TableCell>
+                  <TableCell>
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>
-                        <Button variant="outline" size="sm">
+                        <Button variant="ghost" size="sm">
                           <MoreHorizontal className="h-4 w-4" />
                         </Button>
                       </DropdownMenuTrigger>
@@ -246,34 +203,38 @@ export function OrdersList({
                         <DropdownMenuLabel>Actions</DropdownMenuLabel>
                         <DropdownMenuSeparator />
                         <DropdownMenuItem onClick={() => router.push(`/admin/orders/${order.id}`)}>
+                          <Eye className="mr-2 h-4 w-4" />
+                          View Details
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onClick={() => router.push(`/admin/orders/${order.id}/edit`)}>
                           <Edit className="mr-2 h-4 w-4" />
                           Edit Order
                         </DropdownMenuItem>
-                        <DropdownMenuItem onClick={() => onBulkAssignDriver(order.driver_id || "")}>
-                          <UserCheck className="mr-2 h-4 w-4" />
-                          Assign Driver
-                        </DropdownMenuItem>
+                        {order.is_shopify_order && order.shop_domain && (
+                          <DropdownMenuItem onClick={() => window.open(`https://${order.shop_domain}/admin`, "_blank")}>
+                            <ExternalLink className="mr-2 h-4 w-4" />
+                            View in Shopify
+                          </DropdownMenuItem>
+                        )}
                         <DropdownMenuSeparator />
-                        <DropdownMenuItem onClick={() => handlePrintLabel(order)}>
-                          <Printer className="mr-2 h-4 w-4" />
-                          Print Label
-                        </DropdownMenuItem>
-                        <DropdownMenuItem onClick={() => handleDownloadLabel(order)}>
-                          <Download className="mr-2 h-4 w-4" />
-                          Download Label
-                        </DropdownMenuItem>
-                        <DropdownMenuSeparator />
-                        <DropdownMenuItem onClick={() => onBulkDelete()} className="text-red-600">
+                        <DropdownMenuItem
+                          onClick={() => {
+                            if (confirm(`Are you sure you want to delete order ${order.order_number}?`)) {
+                              onBulkDelete()
+                            }
+                          }}
+                          className="text-red-600"
+                        >
                           <Trash2 className="mr-2 h-4 w-4" />
                           Delete Order
                         </DropdownMenuItem>
                       </DropdownMenuContent>
                     </DropdownMenu>
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
         </div>
       </CardContent>
     </Card>

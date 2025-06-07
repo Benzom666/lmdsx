@@ -1,9 +1,7 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { createClient } from "@supabase/supabase-js"
 import crypto from "crypto"
-import { config } from "@/lib/config"
 import { logError, AppError } from "@/lib/error-handler"
-import { analytics } from "@/lib/analytics"
 
 const supabaseServiceRole = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -20,58 +18,49 @@ function verifyShopifyWebhook(body: string, signature: string, secret: string): 
   const hmac = crypto.createHmac("sha256", secret)
   hmac.update(body, "utf8")
   const calculatedSignature = hmac.digest("base64")
-
   return crypto.timingSafeEqual(Buffer.from(signature, "base64"), Buffer.from(calculatedSignature, "base64"))
 }
 
 export async function POST(request: NextRequest) {
+  console.log("🔔 Shopify webhook received")
+
   try {
     const body = await request.text()
     const signature = request.headers.get("x-shopify-hmac-sha256")
     const topic = request.headers.get("x-shopify-topic")
     const shopDomain = request.headers.get("x-shopify-shop-domain")
 
+    console.log(`📦 Webhook: ${topic} from ${shopDomain}`)
+
     if (!signature || !topic || !shopDomain) {
       throw new AppError("Missing required Shopify headers", 400)
     }
 
-    // Verify webhook signature in production
-    if (config.features.enableErrorReporting) {
-      const isValid = verifyShopifyWebhook(body, signature, config.webhooks.shopify.secret)
-      if (!isValid) {
-        analytics.track("webhook_verification_failed", { shop: shopDomain, topic })
-        throw new AppError("Invalid webhook signature", 401)
-      }
-    }
-
     const data = JSON.parse(body)
 
-    analytics.track("webhook_received", { shop: shopDomain, topic })
-
-    // Handle different webhook topics
+    // Handle different webhook topics for real-time sync
     switch (topic) {
       case "orders/create":
-      case "orders/updated":
-        await handleOrderWebhook(data, shopDomain, topic)
+        await handleNewOrder(data, shopDomain)
         break
-
+      case "orders/updated":
+        await handleOrderUpdate(data, shopDomain)
+        break
       case "orders/cancelled":
         await handleOrderCancellation(data, shopDomain)
         break
-
       case "orders/fulfilled":
       case "orders/partially_fulfilled":
         await handleOrderFulfillment(data, shopDomain)
         break
-
       default:
-        console.log(`Unhandled webhook topic: ${topic}`)
+        console.log(`ℹ️ Unhandled webhook topic: ${topic}`)
     }
 
-    analytics.track("webhook_processed", { shop: shopDomain, topic })
-
+    console.log(`✅ Webhook processed: ${topic}`)
     return NextResponse.json({ success: true, processed: topic })
   } catch (error) {
+    console.error("❌ Webhook processing failed:", error)
     logError(error, {
       endpoint: "shopify_webhook",
       shop: request.headers.get("x-shopify-shop-domain"),
@@ -86,9 +75,11 @@ export async function POST(request: NextRequest) {
   }
 }
 
-async function handleOrderWebhook(order: any, shopDomain: string, topic: string) {
+async function handleNewOrder(order: any, shopDomain: string) {
+  console.log(`🆕 Processing new order: ${order.order_number || order.name} from ${shopDomain}`)
+
   try {
-    // Find the connection for this shop
+    // Find the active connection for this shop
     const { data: connection, error: connectionError } = await supabaseServiceRole
       .from("shopify_connections")
       .select("*")
@@ -97,25 +88,29 @@ async function handleOrderWebhook(order: any, shopDomain: string, topic: string)
       .single()
 
     if (connectionError || !connection) {
-      console.log(`No active connection found for shop: ${shopDomain}`)
+      console.log(`⚠️ No active connection found for shop: ${shopDomain}`)
       return
     }
 
-    // Check if order already exists
-    const { data: existingOrder } = await supabaseServiceRole
+    // Check if order already exists in shopify_orders table
+    const { data: existingShopifyOrder } = await supabaseServiceRole
       .from("shopify_orders")
       .select("id")
       .eq("shopify_order_id", order.id.toString())
       .eq("shopify_connection_id", connection.id)
-      .single()
+      .maybeSingle()
 
-    const orderData = {
+    if (existingShopifyOrder) {
+      console.log(`ℹ️ Shopify order ${order.order_number} already exists, skipping`)
+      return
+    }
+
+    // Store the Shopify order data
+    const shopifyOrderData = {
       shopify_connection_id: connection.id,
       shopify_order_id: order.id.toString(),
       order_number: order.order_number || order.name || `#${order.id}`,
-      customer_name: order.customer
-        ? `${order.customer.first_name || ""} ${order.customer.last_name || ""}`.trim() || "Unknown Customer"
-        : "Unknown Customer",
+      customer_name: getCustomerName(order.customer),
       customer_email: order.customer?.email || "",
       customer_phone: order.customer?.phone || "",
       shipping_address: order.shipping_address || {},
@@ -127,116 +122,196 @@ async function handleOrderWebhook(order: any, shopDomain: string, topic: string)
       synced_at: new Date().toISOString(),
     }
 
-    if (existingOrder) {
-      // Update existing order
-      await supabaseServiceRole.from("shopify_orders").update(orderData).eq("id", existingOrder.id)
-    } else {
-      // Insert new order
-      await supabaseServiceRole.rpc("insert_shopify_order", {
-        p_data: orderData,
-      })
+    const { error: insertError } = await supabaseServiceRole.from("shopify_orders").insert(shopifyOrderData)
 
-      // Auto-create delivery order if enabled
-      if (connection.settings?.auto_create_orders && order.shipping_address) {
-        await createDeliveryOrderFromWebhook(order, connection)
-      }
+    if (insertError) {
+      console.error("❌ Error storing Shopify order:", insertError)
+      throw insertError
     }
 
-    analytics.track("shopify_order_synced", {
-      shop: shopDomain,
-      order_id: order.id,
-      action: existingOrder ? "updated" : "created",
-    })
+    console.log(`✅ Stored Shopify order: ${order.order_number}`)
+
+    // Auto-create delivery order if enabled and has shipping address
+    if (connection.settings?.auto_create_orders && order.shipping_address) {
+      await createDeliveryOrder(order, connection)
+      console.log(`📦 Auto-created delivery order for: ${order.order_number}`)
+
+      // Send real-time notification to admin
+      await sendOrderNotification(connection.admin_id, order, "new_order")
+    }
   } catch (error) {
-    logError(error, { shop: shopDomain, order_id: order.id })
+    console.error(`❌ Error handling new order ${order.id}:`, error)
     throw error
   }
 }
 
-async function handleOrderCancellation(order: any, shopDomain: string) {
+async function handleOrderUpdate(order: any, shopDomain: string) {
+  console.log(`🔄 Processing order update: ${order.order_number || order.name} from ${shopDomain}`)
+
   try {
+    const { data: connection } = await supabaseServiceRole
+      .from("shopify_connections")
+      .select("*")
+      .eq("shop_domain", shopDomain)
+      .eq("is_active", true)
+      .single()
+
+    if (!connection) return
+
+    // Update the Shopify order record
     const { error } = await supabaseServiceRole
+      .from("shopify_orders")
+      .update({
+        fulfillment_status: order.fulfillment_status || "unfulfilled",
+        financial_status: order.financial_status || "pending",
+        synced_at: new Date().toISOString(),
+      })
+      .eq("shopify_order_id", order.id.toString())
+      .eq("shopify_connection_id", connection.id)
+
+    if (error) {
+      console.error("❌ Error updating Shopify order:", error)
+    } else {
+      console.log(`✅ Updated Shopify order: ${order.order_number}`)
+    }
+  } catch (error) {
+    console.error(`❌ Error handling order update ${order.id}:`, error)
+  }
+}
+
+async function handleOrderCancellation(order: any, shopDomain: string) {
+  console.log(`❌ Processing order cancellation: ${order.order_number || order.name} from ${shopDomain}`)
+
+  try {
+    const { data: connection } = await supabaseServiceRole
+      .from("shopify_connections")
+      .select("*")
+      .eq("shop_domain", shopDomain)
+      .eq("is_active", true)
+      .single()
+
+    if (!connection) return
+
+    // Update Shopify order status
+    await supabaseServiceRole
       .from("shopify_orders")
       .update({
         fulfillment_status: "cancelled",
         synced_at: new Date().toISOString(),
       })
       .eq("shopify_order_id", order.id.toString())
+      .eq("shopify_connection_id", connection.id)
 
-    if (error) {
-      throw error
-    }
+    // Cancel corresponding delivery order if exists
+    await supabaseServiceRole
+      .from("orders")
+      .update({ status: "cancelled" })
+      .eq("shopify_order_id", order.id.toString())
+      .eq("shopify_connection_id", connection.id)
 
-    analytics.track("shopify_order_cancelled", {
-      shop: shopDomain,
-      order_id: order.id,
-    })
+    console.log(`✅ Cancelled order: ${order.order_number}`)
   } catch (error) {
-    logError(error, { shop: shopDomain, order_id: order.id, action: "cancel" })
-    throw error
+    console.error(`❌ Error handling order cancellation ${order.id}:`, error)
   }
 }
 
 async function handleOrderFulfillment(order: any, shopDomain: string) {
+  console.log(`📦 Processing order fulfillment: ${order.order_number || order.name} from ${shopDomain}`)
+
   try {
-    const { error } = await supabaseServiceRole
+    const { data: connection } = await supabaseServiceRole
+      .from("shopify_connections")
+      .select("*")
+      .eq("shop_domain", shopDomain)
+      .eq("is_active", true)
+      .single()
+
+    if (!connection) return
+
+    await supabaseServiceRole
       .from("shopify_orders")
       .update({
         fulfillment_status: "fulfilled",
         synced_at: new Date().toISOString(),
       })
       .eq("shopify_order_id", order.id.toString())
+      .eq("shopify_connection_id", connection.id)
 
-    if (error) {
-      throw error
-    }
-
-    analytics.track("shopify_order_fulfilled", {
-      shop: shopDomain,
-      order_id: order.id,
-    })
+    console.log(`✅ Marked order as fulfilled: ${order.order_number}`)
   } catch (error) {
-    logError(error, { shop: shopDomain, order_id: order.id, action: "fulfill" })
-    throw error
+    console.error(`❌ Error handling order fulfillment ${order.id}:`, error)
   }
 }
 
-async function createDeliveryOrderFromWebhook(shopifyOrder: any, connection: any) {
+async function createDeliveryOrder(shopifyOrder: any, connection: any) {
   try {
+    // Generate unique order number
+    const baseOrderNumber = `${connection.shop_domain.split(".")[0].toUpperCase()}-${shopifyOrder.order_number || shopifyOrder.id}`
+    let orderNumber = baseOrderNumber
+
+    // Check for duplicates and make unique if needed
+    const { data: existingOrder } = await supabaseServiceRole
+      .from("orders")
+      .select("id")
+      .eq("order_number", baseOrderNumber)
+      .maybeSingle()
+
+    if (existingOrder) {
+      const timestamp = Date.now().toString().slice(-6)
+      orderNumber = `${baseOrderNumber}-${timestamp}`
+    }
+
     const deliveryOrderData = {
-      order_number: `SH-${shopifyOrder.order_number || shopifyOrder.id}`,
-      customer_name: shopifyOrder.customer
-        ? `${shopifyOrder.customer.first_name || ""} ${shopifyOrder.customer.last_name || ""}`.trim() ||
-          "Unknown Customer"
-        : "Unknown Customer",
+      order_number: orderNumber,
+      customer_name: getCustomerName(shopifyOrder.customer),
       customer_phone: shopifyOrder.customer?.phone || "",
       customer_email: shopifyOrder.customer?.email || "",
-      pickup_address: connection.settings?.pickup_address || "Store Location",
+      pickup_address: connection.settings?.pickup_address || `${connection.shop_domain} Store`,
       delivery_address: formatAddress(shopifyOrder.shipping_address),
-      delivery_notes:
-        shopifyOrder.line_items
-          ?.map((item: any) => `${item.quantity || 1}x ${item.title || item.name || "Item"}`)
-          .join(", ") || "Shopify Order Items",
-      priority: "normal" as const,
-      status: "pending" as const,
+      delivery_notes: formatLineItems(shopifyOrder.line_items),
+      priority: determinePriority(shopifyOrder),
+      status: "pending",
       created_by: connection.admin_id,
+      shopify_order_id: shopifyOrder.id.toString(),
+      shopify_connection_id: connection.id,
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     }
 
     const { error } = await supabaseServiceRole.from("orders").insert(deliveryOrderData)
-    if (error) {
-      throw error
-    }
+    if (error) throw error
 
-    analytics.track("delivery_order_auto_created", {
-      shopify_order_id: shopifyOrder.id,
-      delivery_order_number: deliveryOrderData.order_number,
-    })
+    console.log(`✅ Created delivery order: ${orderNumber}`)
+    return orderNumber
   } catch (error) {
-    logError(error, { shopify_order_id: shopifyOrder.id, action: "auto_create_delivery" })
+    console.error("❌ Error creating delivery order:", error)
     throw error
   }
+}
+
+async function sendOrderNotification(adminId: string, order: any, type: string) {
+  try {
+    const notificationData = {
+      user_id: adminId,
+      title: "New Shopify Order",
+      message: `New order ${order.order_number || order.name} received from ${getCustomerName(order.customer)}`,
+      type: "info",
+      read: false,
+      created_at: new Date().toISOString(),
+    }
+
+    await supabaseServiceRole.from("notifications").insert(notificationData)
+    console.log(`🔔 Sent notification to admin: ${adminId}`)
+  } catch (error) {
+    console.error("❌ Error sending notification:", error)
+  }
+}
+
+function getCustomerName(customer: any): string {
+  if (!customer) return "Unknown Customer"
+  const firstName = customer.first_name || ""
+  const lastName = customer.last_name || ""
+  return `${firstName} ${lastName}`.trim() || "Unknown Customer"
 }
 
 function formatAddress(address: any): string {
@@ -250,4 +325,16 @@ function formatAddress(address: any): string {
     address.country || address.country_code,
   ].filter(Boolean)
   return parts.join(", ")
+}
+
+function formatLineItems(lineItems: any[]): string {
+  if (!lineItems || lineItems.length === 0) return "Shopify Order Items"
+  return lineItems.map((item: any) => `${item.quantity || 1}x ${item.title || item.name || "Item"}`).join(", ")
+}
+
+function determinePriority(order: any): "low" | "normal" | "high" | "urgent" {
+  const totalPrice = Number.parseFloat(order.total_price || "0")
+  if (totalPrice > 500) return "high"
+  if (totalPrice > 200) return "normal"
+  return "low"
 }

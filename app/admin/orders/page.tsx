@@ -5,7 +5,7 @@ import type React from "react"
 import { useState, useEffect } from "react"
 import { useRouter } from "next/navigation"
 import { DashboardLayout } from "@/components/dashboard-layout"
-import { Card, CardContent } from "@/components/ui/card"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
@@ -35,6 +35,8 @@ import {
   UserCheck,
   RefreshCw,
   Printer,
+  Store,
+  ExternalLink,
 } from "lucide-react"
 import {
   DropdownMenu,
@@ -48,6 +50,17 @@ import { OrdersList } from "@/components/admin/orders-list"
 
 interface OrderWithActions extends Order {
   driver_name?: string
+  shop_domain?: string
+  shopify_order_number?: string
+  is_shopify_order?: boolean
+}
+
+interface ShopifyConnection {
+  id: string
+  shop_domain: string
+  is_active: boolean
+  orders_synced: number
+  last_sync: string
 }
 
 interface BulkUploadResult {
@@ -67,10 +80,12 @@ export default function AdminOrdersPage() {
   const [statusFilter, setStatusFilter] = useState("all")
   const [priorityFilter, setPriorityFilter] = useState("all")
   const [driverFilter, setDriverFilter] = useState("all")
+  const [storeFilter, setStoreFilter] = useState("all")
   const [activeTab, setActiveTab] = useState("all")
   const [showMap, setShowMap] = useState(false)
   const [mapOrders, setMapOrders] = useState<OrderWithActions[]>([])
   const [drivers, setDrivers] = useState<Array<{ id: string; name: string }>>([])
+  const [shopifyConnections, setShopifyConnections] = useState<ShopifyConnection[]>([])
 
   // Bulk operations state
   const [selectedOrders, setSelectedOrders] = useState<Set<string>>(new Set())
@@ -84,8 +99,53 @@ export default function AdminOrdersPage() {
     if (profile) {
       fetchOrders()
       fetchDrivers()
+      fetchShopifyConnections()
+
+      // Set up real-time subscription for new orders
+      const subscription = supabase
+        .channel("orders_changes")
+        .on(
+          "postgres_changes",
+          {
+            event: "INSERT",
+            schema: "public",
+            table: "orders",
+            filter: `created_by=eq.${profile.user_id}`,
+          },
+          (payload) => {
+            console.log("🔔 New order received:", payload.new)
+            fetchOrders() // Refresh orders list
+            toast({
+              title: "New Order Received",
+              description: `Order ${payload.new.order_number} has been added`,
+            })
+          },
+        )
+        .subscribe()
+
+      return () => {
+        subscription.unsubscribe()
+      }
     }
   }, [profile])
+
+  const fetchShopifyConnections = async () => {
+    if (!profile) return
+
+    try {
+      const { data, error } = await supabase
+        .from("shopify_connections")
+        .select("id, shop_domain, is_active, orders_synced, last_sync")
+        .eq("admin_id", profile.user_id)
+        .order("created_at", { ascending: false })
+
+      if (error) throw error
+
+      setShopifyConnections(data || [])
+    } catch (error) {
+      console.error("Error fetching Shopify connections:", error)
+    }
+  }
 
   const fetchDrivers = async () => {
     if (!profile) return
@@ -115,16 +175,21 @@ export default function AdminOrdersPage() {
 
     setLoading(true)
     try {
-      // First fetch orders (including those created from Shopify)
+      // Fetch orders with Shopify connection info
       const { data: ordersData, error: ordersError } = await supabase
         .from("orders")
-        .select("*")
+        .select(`
+          *,
+          shopify_connections!shopify_connection_id (
+            shop_domain
+          )
+        `)
         .eq("created_by", profile.user_id)
         .order("created_at", { ascending: false })
 
       if (ordersError) throw ordersError
 
-      // Then fetch driver information separately
+      // Fetch driver information
       const { data: driversData, error: driversError } = await supabase
         .from("user_profiles")
         .select("user_id, first_name, last_name")
@@ -138,14 +203,19 @@ export default function AdminOrdersPage() {
         driverMap.set(driver.user_id, `${driver.first_name || ""} ${driver.last_name || ""}`.trim())
       })
 
-      // Combine orders with driver names
-      const ordersWithDriverNames = (ordersData || []).map((order: any) => ({
+      // Combine orders with driver names and Shopify info
+      const ordersWithDetails = (ordersData || []).map((order: any) => ({
         ...order,
         driver_name: order.driver_id ? driverMap.get(order.driver_id) || "Unknown Driver" : "Unassigned",
+        shop_domain: order.shopify_connections?.shop_domain || null,
+        is_shopify_order: !!order.shopify_order_id,
+        shopify_order_number: order.shopify_order_id ? `#${order.shopify_order_id}` : null,
       }))
 
-      console.log(`📦 Loaded ${ordersWithDriverNames.length} orders`)
-      setOrders(ordersWithDriverNames)
+      console.log(
+        `📦 Loaded ${ordersWithDetails.length} orders (${ordersWithDetails.filter((o) => o.is_shopify_order).length} from Shopify)`,
+      )
+      setOrders(ordersWithDetails)
     } catch (error) {
       console.error("Error fetching orders:", error)
       toast({
@@ -400,6 +470,8 @@ export default function AdminOrdersPage() {
       "Status",
       "Priority",
       "Driver",
+      "Store",
+      "Shopify Order",
       "Created Date",
     ]
 
@@ -413,6 +485,8 @@ export default function AdminOrdersPage() {
       order.status,
       order.priority,
       order.driver_name || "Unassigned",
+      order.shop_domain || "Manual",
+      order.shopify_order_number || "N/A",
       new Date(order.created_at).toLocaleDateString(),
     ])
 
@@ -498,18 +572,40 @@ export default function AdminOrdersPage() {
     )
   }
 
+  const getStoreBadge = (order: OrderWithActions) => {
+    if (order.is_shopify_order && order.shop_domain) {
+      return (
+        <Badge variant="outline" className="bg-green-50 text-green-700 border-green-200">
+          <Store className="mr-1 h-3 w-3" />
+          {order.shop_domain.split(".")[0]}
+        </Badge>
+      )
+    }
+    return (
+      <Badge variant="outline" className="bg-gray-50 text-gray-700 border-gray-200">
+        Manual
+      </Badge>
+    )
+  }
+
   const filteredOrders = orders.filter((order) => {
     const matchesSearch =
       order.order_number.toLowerCase().includes(searchTerm.toLowerCase()) ||
       order.customer_name.toLowerCase().includes(searchTerm.toLowerCase()) ||
       order.delivery_address.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      (order.driver_name && order.driver_name.toLowerCase().includes(searchTerm.toLowerCase()))
+      (order.driver_name && order.driver_name.toLowerCase().includes(searchTerm.toLowerCase())) ||
+      (order.shop_domain && order.shop_domain.toLowerCase().includes(searchTerm.toLowerCase()))
 
     const matchesStatus = statusFilter === "all" || order.status === statusFilter
     const matchesPriority = priorityFilter === "all" || order.priority === priorityFilter
     const matchesDriver = driverFilter === "all" || order.driver_id === driverFilter
+    const matchesStore =
+      storeFilter === "all" ||
+      (storeFilter === "manual" && !order.is_shopify_order) ||
+      (storeFilter === "shopify" && order.is_shopify_order) ||
+      (order.shop_domain && order.shop_domain === storeFilter)
 
-    return matchesSearch && matchesStatus && matchesPriority && matchesDriver
+    return matchesSearch && matchesStatus && matchesPriority && matchesDriver && matchesStore
   })
 
   const getOrdersByTab = (tab: string) => {
@@ -520,6 +616,8 @@ export default function AdminOrdersPage() {
         return filteredOrders.filter((order) => order.status === "delivered")
       case "failed":
         return filteredOrders.filter((order) => order.status === "failed")
+      case "shopify":
+        return filteredOrders.filter((order) => order.is_shopify_order)
       default:
         return filteredOrders
     }
@@ -540,10 +638,16 @@ export default function AdminOrdersPage() {
       <div className="space-y-6">
         <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-2xl font-bold">Order Management</h1>
-            <p className="text-muted-foreground">Manage and track all delivery orders with bulk operations</p>
+            <h1 className="text-2xl font-bold">Multi-Store Order Management</h1>
+            <p className="text-muted-foreground">
+              Manage orders from {shopifyConnections.length} connected Shopify stores and manual orders
+            </p>
           </div>
           <div className="flex gap-2">
+            <Button onClick={() => router.push("/admin/integrations")} variant="outline">
+              <Store className="mr-2 h-4 w-4" />
+              Manage Stores
+            </Button>
             <Button onClick={viewOrdersOnMap} variant="outline">
               <MapPin className="mr-2 h-4 w-4" />
               View on Map
@@ -554,6 +658,48 @@ export default function AdminOrdersPage() {
             </Button>
           </div>
         </div>
+
+        {/* Shopify Stores Overview */}
+        {shopifyConnections.length > 0 && (
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Store className="h-5 w-5" />
+                Connected Shopify Stores
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {shopifyConnections.map((connection) => (
+                  <div key={connection.id} className="p-4 border rounded-lg">
+                    <div className="flex items-center justify-between mb-2">
+                      <h4 className="font-medium">{connection.shop_domain}</h4>
+                      <Badge variant={connection.is_active ? "default" : "secondary"}>
+                        {connection.is_active ? "Active" : "Inactive"}
+                      </Badge>
+                    </div>
+                    <div className="text-sm text-muted-foreground space-y-1">
+                      <p>Orders synced: {connection.orders_synced || 0}</p>
+                      <p>
+                        Last sync:{" "}
+                        {connection.last_sync ? new Date(connection.last_sync).toLocaleDateString() : "Never"}
+                      </p>
+                    </div>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="mt-2"
+                      onClick={() => window.open(`https://${connection.shop_domain}/admin`, "_blank")}
+                    >
+                      <ExternalLink className="mr-1 h-3 w-3" />
+                      Open Store
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+        )}
 
         {/* Bulk Upload Section */}
         <Card>
@@ -716,7 +862,7 @@ export default function AdminOrdersPage() {
                 <div className="relative">
                   <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                   <Input
-                    placeholder="Search orders by number, customer, address, or driver..."
+                    placeholder="Search orders by number, customer, address, driver, or store..."
                     value={searchTerm}
                     onChange={(e) => setSearchTerm(e.target.value)}
                     className="pl-10"
@@ -750,6 +896,21 @@ export default function AdminOrdersPage() {
                     <SelectItem value="low">Low</SelectItem>
                   </SelectContent>
                 </Select>
+                <Select value={storeFilter} onValueChange={setStoreFilter}>
+                  <SelectTrigger className="w-[140px]">
+                    <SelectValue placeholder="Store" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All Stores</SelectItem>
+                    <SelectItem value="manual">Manual Orders</SelectItem>
+                    <SelectItem value="shopify">Shopify Orders</SelectItem>
+                    {shopifyConnections.map((connection) => (
+                      <SelectItem key={connection.id} value={connection.shop_domain}>
+                        {connection.shop_domain.split(".")[0]}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
                 <Select value={driverFilter} onValueChange={setDriverFilter}>
                   <SelectTrigger className="w-[140px]">
                     <SelectValue placeholder="Driver" />
@@ -774,7 +935,7 @@ export default function AdminOrdersPage() {
 
         {/* Orders Tabs */}
         <Tabs value={activeTab} onValueChange={setActiveTab}>
-          <TabsList className="grid w-full grid-cols-4">
+          <TabsList className="grid w-full grid-cols-5">
             <TabsTrigger value="all" className="flex items-center gap-2">
               <Package className="h-4 w-4" />
               All ({getTabCount("all")})
@@ -791,6 +952,10 @@ export default function AdminOrdersPage() {
               <AlertTriangle className="h-4 w-4" />
               Failed ({getTabCount("failed")})
             </TabsTrigger>
+            <TabsTrigger value="shopify" className="flex items-center gap-2">
+              <Store className="h-4 w-4" />
+              Shopify ({getTabCount("shopify")})
+            </TabsTrigger>
           </TabsList>
 
           <TabsContent value="all" className="mt-6">
@@ -804,6 +969,7 @@ export default function AdminOrdersPage() {
               someSelected={someSelected}
               getStatusBadge={getStatusBadge}
               getPriorityBadge={getPriorityBadge}
+              getStoreBadge={getStoreBadge}
               onBulkAssignDriver={handleBulkAssignDriver}
               onBulkDelete={handleBulkDelete}
               router={router}
@@ -821,6 +987,7 @@ export default function AdminOrdersPage() {
               someSelected={someSelected}
               getStatusBadge={getStatusBadge}
               getPriorityBadge={getPriorityBadge}
+              getStoreBadge={getStoreBadge}
               onBulkAssignDriver={handleBulkAssignDriver}
               onBulkDelete={handleBulkDelete}
               router={router}
@@ -838,6 +1005,7 @@ export default function AdminOrdersPage() {
               someSelected={someSelected}
               getStatusBadge={getStatusBadge}
               getPriorityBadge={getPriorityBadge}
+              getStoreBadge={getStoreBadge}
               onBulkAssignDriver={handleBulkAssignDriver}
               onBulkDelete={handleBulkDelete}
               router={router}
@@ -855,6 +1023,25 @@ export default function AdminOrdersPage() {
               someSelected={someSelected}
               getStatusBadge={getStatusBadge}
               getPriorityBadge={getPriorityBadge}
+              getStoreBadge={getStoreBadge}
+              onBulkAssignDriver={handleBulkAssignDriver}
+              onBulkDelete={handleBulkDelete}
+              router={router}
+            />
+          </TabsContent>
+
+          <TabsContent value="shopify" className="mt-6">
+            <OrdersList
+              orders={getOrdersByTab("shopify")}
+              loading={loading}
+              selectedOrders={selectedOrders}
+              onSelectAll={handleSelectAll}
+              onSelectOrder={handleSelectOrder}
+              allSelected={allSelected}
+              someSelected={someSelected}
+              getStatusBadge={getStatusBadge}
+              getPriorityBadge={getPriorityBadge}
+              getStoreBadge={getStoreBadge}
               onBulkAssignDriver={handleBulkAssignDriver}
               onBulkDelete={handleBulkDelete}
               router={router}

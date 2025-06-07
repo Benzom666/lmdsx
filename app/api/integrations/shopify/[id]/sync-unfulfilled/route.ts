@@ -117,37 +117,47 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
 
     console.log(`🔄 Syncing UNFULFILLED orders for shop: ${connection.shop_domain}`)
 
-    // Fetch only unfulfilled orders from Shopify
+    // Fetch only unfulfilled orders from Shopify - no mock data
     let orders: any[] = []
     let isRealShopifyData = false
 
-    if (process.env.NODE_ENV === "production" && connection.access_token.startsWith("shpat_")) {
+    if (connection.access_token.startsWith("shpat_")) {
       try {
         console.log("🌐 Fetching UNFULFILLED orders from Shopify API...")
         orders = await fetchUnfulfilledShopifyOrders(connection.shop_domain, connection.access_token)
         isRealShopifyData = true
         console.log(`✅ Fetched ${orders.length} unfulfilled orders from Shopify`)
       } catch (shopifyError) {
-        console.log("⚠️ Shopify API failed, falling back to demo data:", shopifyError)
-        orders = generateMockUnfulfilledOrders(connection.shop_domain)
-        isRealShopifyData = false
+        console.error("❌ Shopify API failed:", shopifyError)
+        return NextResponse.json(
+          {
+            error: "Failed to fetch unfulfilled orders from Shopify",
+            details: shopifyError instanceof Error ? shopifyError.message : "Unknown error",
+          },
+          { status: 500 },
+        )
       }
     } else {
-      console.log("🎭 Using demo unfulfilled orders (development mode or invalid token)")
-      orders = generateMockUnfulfilledOrders(connection.shop_domain)
-      isRealShopifyData = false
+      console.log("❌ Invalid Shopify access token - must start with 'shpat_'")
+      return NextResponse.json(
+        {
+          error: "Invalid Shopify access token",
+          details: "Access token must be a valid Shopify private app token starting with 'shpat_'",
+        },
+        { status: 400 },
+      )
     }
 
     if (orders.length === 0) {
-      console.log("ℹ️ No unfulfilled orders to sync")
+      console.log("ℹ️ No unfulfilled orders found in Shopify store")
       return NextResponse.json({
         success: true,
         synced_count: 0,
         total_orders: 0,
         error_count: 0,
         delivery_orders_created: 0,
-        message: "No new unfulfilled orders to sync",
-        data_source: isRealShopifyData ? "shopify_api" : "demo",
+        message: "No unfulfilled orders found in Shopify store",
+        data_source: "shopify_api",
       })
     }
 
@@ -263,9 +273,7 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
       console.error("⚠️ Error updating connection stats:", updateError)
     }
 
-    const message = isRealShopifyData
-      ? `Successfully synced ${syncedCount} unfulfilled orders from Shopify${deliveryOrdersCreated > 0 ? ` and created ${deliveryOrdersCreated} delivery orders ready for assignment` : ""}${errorCount > 0 ? ` (${errorCount} errors)` : ""}`
-      : `Successfully synced ${syncedCount} demo unfulfilled orders${deliveryOrdersCreated > 0 ? ` and created ${deliveryOrdersCreated} delivery orders ready for assignment` : ""}${errorCount > 0 ? ` (${errorCount} errors)` : ""} (Demo Mode)`
+    const message = `Successfully synced ${syncedCount} unfulfilled orders from Shopify${deliveryOrdersCreated > 0 ? ` and created ${deliveryOrdersCreated} delivery orders ready for assignment` : ""}${errorCount > 0 ? ` (${errorCount} errors)` : ""}`
 
     console.log(
       `🎉 Sync completed: ${syncedCount} synced, ${deliveryOrdersCreated} delivery orders created, ${errorCount} errors`,
@@ -279,7 +287,7 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
       delivery_orders_created: deliveryOrdersCreated,
       unfulfilled_orders_only: true,
       message,
-      data_source: isRealShopifyData ? "shopify_api" : "demo",
+      data_source: "shopify_api",
     })
   } catch (error) {
     console.error("💥 Critical error in sync endpoint:", error)
@@ -318,61 +326,34 @@ async function fetchUnfulfilledShopifyOrders(shopDomain: string, accessToken: st
   return data.orders || []
 }
 
-function generateMockUnfulfilledOrders(shopDomain: string): any[] {
-  console.log("🎭 Generating mock UNFULFILLED orders for:", shopDomain)
-  const currentDate = new Date()
-  const orders = []
-  for (let i = 1; i <= 5; i++) {
-    const orderId = Math.floor(Math.random() * 1000000) + 1000000
-    const orderDate = new Date(currentDate.getTime() - i * 24 * 60 * 60 * 1000)
-    orders.push({
-      id: orderId,
-      order_number: `${1000 + i}`,
-      name: `#${1000 + i}`,
-      created_at: orderDate.toISOString(),
-      updated_at: orderDate.toISOString(),
-      total_price: (Math.random() * 200 + 50).toFixed(2),
-      financial_status: "paid",
-      fulfillment_status: "unfulfilled", // ONLY unfulfilled orders
-      customer: {
-        id: Math.floor(Math.random() * 100000),
-        first_name: ["John", "Jane", "Mike", "Sarah", "David"][Math.floor(Math.random() * 5)],
-        last_name: ["Smith", "Johnson", "Williams", "Brown", "Davis"][Math.floor(Math.random() * 5)],
-        email: `customer${i}@example.com`,
-        phone: `+1-555-${String(Math.floor(Math.random() * 9000) + 1000)}`,
-      },
-      shipping_address: {
-        first_name: ["John", "Jane", "Mike", "Sarah", "David"][Math.floor(Math.random() * 5)],
-        last_name: ["Smith", "Johnson", "Williams", "Brown", "Davis"][Math.floor(Math.random() * 5)],
-        address1: `${Math.floor(Math.random() * 9999) + 1} Main St`,
-        address2: Math.random() > 0.5 ? `Apt ${Math.floor(Math.random() * 100) + 1}` : null,
-        city: ["New York", "Los Angeles", "Chicago", "Houston", "Phoenix"][Math.floor(Math.random() * 5)],
-        province: "NY",
-        zip: String(Math.floor(Math.random() * 90000) + 10000),
-        country: "United States",
-        country_code: "US",
-      },
-      line_items: [
-        {
-          id: Math.floor(Math.random() * 1000000),
-          title: ["T-Shirt", "Jeans", "Sneakers", "Hoodie", "Cap"][Math.floor(Math.random() * 5)],
-          quantity: Math.floor(Math.random() * 3) + 1,
-          price: (Math.random() * 100 + 20).toFixed(2),
-        },
-      ],
-      note: Math.random() > 0.5 ? "Please handle with care" : "",
-    })
-  }
-  console.log(`🎭 Generated ${orders.length} mock unfulfilled orders`)
-  return orders
-}
-
 async function createDeliveryOrder(shopifyOrder: any, connection: any, adminId: string) {
   try {
     console.log(`📦 Creating delivery order for Shopify order: ${shopifyOrder.order_number || shopifyOrder.id}`)
 
+    // Generate a base order number
+    const baseOrderNumber = `SH-${shopifyOrder.order_number || shopifyOrder.id}`
+
+    // Check if an order with this number already exists
+    const { data: existingOrder, error: checkError } = await supabaseServiceRole
+      .from("orders")
+      .select("id")
+      .eq("order_number", baseOrderNumber)
+      .maybeSingle()
+
+    if (checkError) {
+      console.error("❌ Error checking for existing order:", checkError)
+    }
+
+    // If order number already exists, make it unique by adding a timestamp suffix
+    let orderNumber = baseOrderNumber
+    if (existingOrder) {
+      const timestamp = new Date().getTime().toString().slice(-6)
+      orderNumber = `${baseOrderNumber}-${timestamp}`
+      console.log(`⚠️ Order number ${baseOrderNumber} already exists, using ${orderNumber} instead`)
+    }
+
     const deliveryOrderData = {
-      order_number: `SH-${shopifyOrder.order_number || shopifyOrder.id}`,
+      order_number: orderNumber,
       customer_name: shopifyOrder.customer
         ? `${shopifyOrder.customer.first_name || ""} ${shopifyOrder.customer.last_name || ""}`.trim() ||
           "Unknown Customer"
