@@ -2,15 +2,14 @@
 
 import { useState, useEffect } from "react"
 import { DashboardLayout } from "@/components/dashboard-layout"
-import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Badge } from "@/components/ui/badge"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { Textarea } from "@/components/ui/textarea"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { useToast } from "@/components/ui/use-toast"
+import { useAuth } from "@/contexts/auth-context"
 import {
   Dialog,
   DialogContent,
@@ -20,39 +19,23 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog"
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogTrigger,
-} from "@/components/ui/alert-dialog"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import {
   Key,
   Plus,
   Copy,
-  Check,
   Eye,
   EyeOff,
   Trash2,
-  Play,
-  RefreshCw,
-  ExternalLink,
-  Zap,
-  Shield,
-  Database,
-  Webhook,
-  Settings,
-  BookOpen,
   TestTube,
-  AlertCircle,
+  BookOpen,
   CheckCircle,
   XCircle,
-  Clock,
+  AlertTriangle,
+  Globe,
+  Smartphone,
+  Warehouse,
+  RefreshCw,
 } from "lucide-react"
 
 interface ApiKey {
@@ -60,214 +43,58 @@ interface ApiKey {
   name: string
   key: string
   permissions: string[]
+  is_active: boolean
+  last_used_at?: string
   created_at: string
-  last_used: string | null
-  status: "active" | "inactive"
 }
 
 interface TestResult {
+  id: string
   endpoint: string
-  status: "success" | "error" | "pending"
-  response?: any
-  error?: string
-  duration?: number
+  method: string
+  status: number
+  response: any
+  timestamp: string
 }
 
 export default function IntegrationsPage() {
+  const { profile } = useAuth()
   const { toast } = useToast()
   const [apiKeys, setApiKeys] = useState<ApiKey[]>([])
-  const [loading, setLoading] = useState(false)
-  const [copiedKey, setCopiedKey] = useState<string | null>(null)
-  const [visibleKeys, setVisibleKeys] = useState<Set<string>>(new Set())
-  const [testResults, setTestResults] = useState<TestResult[]>([])
-  const [isTestingConnection, setIsTestingConnection] = useState(false)
-
-  // New API Key Dialog State
-  const [newKeyDialog, setNewKeyDialog] = useState(false)
+  const [loading, setLoading] = useState(true)
+  const [createKeyOpen, setCreateKeyOpen] = useState(false)
   const [newKeyName, setNewKeyName] = useState("")
   const [newKeyPermissions, setNewKeyPermissions] = useState<string[]>([])
+  const [visibleKeys, setVisibleKeys] = useState<Set<string>>(new Set())
+  const [testResults, setTestResults] = useState<TestResult[]>([])
+  const [selectedApiKey, setSelectedApiKey] = useState("")
+  const [selectedEndpoint, setSelectedEndpoint] = useState("")
+  const [testLoading, setTestLoading] = useState(false)
 
-  // Test Configuration State
-  const [testConfig, setTestConfig] = useState({
-    apiKey: "",
-    endpoint: "/api/deliveries",
-    method: "GET",
-    payload: "",
+  // Statistics
+  const [stats, setStats] = useState({
+    totalKeys: 0,
+    activeKeys: 0,
+    totalApis: 12,
+    successfulTests: 0,
   })
-
-  const availableApis = [
-    {
-      id: "orders",
-      name: "Orders API",
-      description: "Manage orders, assignments, and status updates",
-      icon: <Database className="w-6 h-6" />,
-      endpoints: [
-        { method: "GET", path: "/api/orders", description: "List all orders" },
-        { method: "POST", path: "/api/assign-order", description: "Assign order to driver" },
-        { method: "PUT", path: "/api/change-order-status", description: "Update order status" },
-      ],
-      status: "active",
-    },
-    {
-      id: "deliveries",
-      name: "Deliveries API",
-      description: "Track deliveries and manage delivery operations",
-      icon: <Zap className="w-6 h-6" />,
-      endpoints: [
-        { method: "GET", path: "/api/deliveries", description: "Get delivery information" },
-        { method: "POST", path: "/api/delivery-failure", description: "Report delivery failure" },
-        { method: "POST", path: "/api/validate-scan", description: "Validate QR code scans" },
-      ],
-      status: "active",
-    },
-    {
-      id: "users",
-      name: "User Management API",
-      description: "Manage drivers, admins, and user accounts",
-      icon: <Shield className="w-6 h-6" />,
-      endpoints: [
-        { method: "POST", path: "/api/create-driver", description: "Create new driver" },
-        { method: "POST", path: "/api/create-admin", description: "Create new admin" },
-        { method: "PUT", path: "/api/suspend-user", description: "Suspend/activate user" },
-      ],
-      status: "active",
-    },
-    {
-      id: "webhooks",
-      name: "Webhooks API",
-      description: "Real-time notifications for order and delivery events",
-      icon: <Webhook className="w-6 h-6" />,
-      endpoints: [
-        { method: "POST", path: "/api/webhooks/register", description: "Register webhook endpoint" },
-        { method: "GET", path: "/api/webhooks", description: "List registered webhooks" },
-        { method: "DELETE", path: "/api/webhooks/:id", description: "Remove webhook" },
-      ],
-      status: "beta",
-    },
-  ]
-
-  const integrationScenarios = [
-    {
-      title: "E-commerce Integration",
-      description: "Connect your online store to automatically create delivery orders",
-      difficulty: "Beginner",
-      steps: [
-        "Generate API key with orders permissions",
-        "Configure webhook for order creation",
-        "Implement order sync endpoint",
-        "Test with sample orders",
-      ],
-      codeExample: `// Create order from e-commerce platform
-const response = await fetch('/api/assign-order', {
-  method: 'POST',
-  headers: {
-    'Authorization': 'Bearer YOUR_API_KEY',
-    'Content-Type': 'application/json'
-  },
-  body: JSON.stringify({
-    orderId: 'ECOM_ORDER_123',
-    customerInfo: {
-      name: 'John Doe',
-      address: '123 Main St',
-      phone: '+1234567890'
-    },
-    items: [
-      { name: 'Product A', quantity: 2 }
-    ]
-  })
-});`,
-    },
-    {
-      title: "Mobile App Integration",
-      description: "Build a mobile app for customers to track their deliveries",
-      difficulty: "Intermediate",
-      steps: [
-        "Set up API key with delivery tracking permissions",
-        "Implement real-time tracking using webhooks",
-        "Add push notifications for status updates",
-        "Test delivery flow end-to-end",
-      ],
-      codeExample: `// Track delivery status
-const trackDelivery = async (orderId) => {
-  const response = await fetch(\`/api/deliveries?orderId=\${orderId}\`, {
-    headers: {
-      'Authorization': 'Bearer YOUR_API_KEY'
-    }
-  });
-  
-  const delivery = await response.json();
-  return delivery;
-};`,
-    },
-    {
-      title: "Warehouse Management System",
-      description: "Integrate with WMS for automated order processing",
-      difficulty: "Advanced",
-      steps: [
-        "Configure API keys for full system access",
-        "Set up bidirectional webhooks",
-        "Implement inventory sync",
-        "Add automated driver assignment",
-      ],
-      codeExample: `// Automated order processing
-const processWarehouseOrder = async (warehouseOrder) => {
-  // Create delivery order
-  const orderResponse = await createDeliveryOrder(warehouseOrder);
-  
-  // Auto-assign to available driver
-  const assignResponse = await autoAssignDriver(orderResponse.orderId);
-  
-  // Update warehouse system
-  await updateWarehouseStatus(warehouseOrder.id, 'assigned');
-  
-  return assignResponse;
-};`,
-    },
-  ]
-
-  const permissions = [
-    { id: "orders:read", label: "Read Orders", description: "View order information" },
-    { id: "orders:write", label: "Manage Orders", description: "Create and update orders" },
-    { id: "deliveries:read", label: "Read Deliveries", description: "View delivery information" },
-    { id: "deliveries:write", label: "Manage Deliveries", description: "Update delivery status" },
-    { id: "users:read", label: "Read Users", description: "View user information" },
-    { id: "users:write", label: "Manage Users", description: "Create and manage users" },
-    { id: "webhooks:manage", label: "Manage Webhooks", description: "Configure webhook endpoints" },
-  ]
 
   useEffect(() => {
-    loadApiKeys()
-  }, [])
+    if (profile) {
+      fetchApiKeys()
+    }
+  }, [profile])
 
-  const loadApiKeys = async () => {
-    setLoading(true)
+  const fetchApiKeys = async () => {
     try {
-      // Simulate API call
-      await new Promise((resolve) => setTimeout(resolve, 1000))
-
-      const mockKeys: ApiKey[] = [
-        {
-          id: "key_1",
-          name: "E-commerce Integration",
-          key: "sk_live_1234567890abcdef",
-          permissions: ["orders:read", "orders:write"],
-          created_at: "2024-01-15T10:30:00Z",
-          last_used: "2024-01-20T14:22:00Z",
-          status: "active",
-        },
-        {
-          id: "key_2",
-          name: "Mobile App",
-          key: "sk_live_abcdef1234567890",
-          permissions: ["deliveries:read", "orders:read"],
-          created_at: "2024-01-10T09:15:00Z",
-          last_used: null,
-          status: "inactive",
-        },
-      ]
-
-      setApiKeys(mockKeys)
+      const response = await fetch("/api/api-keys")
+      if (response.ok) {
+        const data = await response.json()
+        setApiKeys(data.apiKeys || [])
+        updateStats(data.apiKeys || [])
+      }
     } catch (error) {
+      console.error("Error fetching API keys:", error)
       toast({
         title: "Error",
         description: "Failed to load API keys",
@@ -278,7 +105,19 @@ const processWarehouseOrder = async (warehouseOrder) => {
     }
   }
 
-  const generateApiKey = async () => {
+  const updateStats = (keys: ApiKey[]) => {
+    const activeKeys = keys.filter((key) => key.is_active).length
+    const successfulTests = testResults.filter((test) => test.status >= 200 && test.status < 300).length
+
+    setStats({
+      totalKeys: keys.length,
+      activeKeys,
+      totalApis: 12,
+      successfulTests,
+    })
+  }
+
+  const createApiKey = async () => {
     if (!newKeyName.trim()) {
       toast({
         title: "Error",
@@ -288,761 +127,748 @@ const processWarehouseOrder = async (warehouseOrder) => {
       return
     }
 
-    if (newKeyPermissions.length === 0) {
-      toast({
-        title: "Error",
-        description: "Please select at least one permission",
-        variant: "destructive",
-      })
-      return
-    }
-
-    setLoading(true)
     try {
-      // Simulate API call
-      await new Promise((resolve) => setTimeout(resolve, 1000))
-
-      const newKey: ApiKey = {
-        id: `key_${Date.now()}`,
-        name: newKeyName,
-        key: `sk_live_${Math.random().toString(36).substring(2, 18)}`,
-        permissions: newKeyPermissions,
-        created_at: new Date().toISOString(),
-        last_used: null,
-        status: "active",
-      }
-
-      setApiKeys([...apiKeys, newKey])
-      setNewKeyDialog(false)
-      setNewKeyName("")
-      setNewKeyPermissions([])
-
-      toast({
-        title: "Success",
-        description: "API key generated successfully",
+      const response = await fetch("/api/api-keys", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: newKeyName,
+          permissions: newKeyPermissions,
+        }),
       })
+
+      if (response.ok) {
+        const data = await response.json()
+        setApiKeys((prev) => [...prev, data.apiKey])
+        setCreateKeyOpen(false)
+        setNewKeyName("")
+        setNewKeyPermissions([])
+
+        toast({
+          title: "API Key Created",
+          description: "Your new API key has been generated successfully",
+        })
+      } else {
+        throw new Error("Failed to create API key")
+      }
     } catch (error) {
       toast({
         title: "Error",
-        description: "Failed to generate API key",
+        description: "Failed to create API key",
         variant: "destructive",
       })
-    } finally {
-      setLoading(false)
     }
   }
 
   const deleteApiKey = async (keyId: string) => {
-    setLoading(true)
     try {
-      // Simulate API call
-      await new Promise((resolve) => setTimeout(resolve, 500))
-
-      setApiKeys(apiKeys.filter((key) => key.id !== keyId))
-
-      toast({
-        title: "Success",
-        description: "API key deleted successfully",
+      const response = await fetch(`/api/api-keys/${keyId}`, {
+        method: "DELETE",
       })
+
+      if (response.ok) {
+        setApiKeys((prev) => prev.filter((key) => key.id !== keyId))
+        toast({
+          title: "API Key Deleted",
+          description: "The API key has been permanently deleted",
+        })
+      }
     } catch (error) {
       toast({
         title: "Error",
         description: "Failed to delete API key",
         variant: "destructive",
       })
-    } finally {
-      setLoading(false)
     }
   }
 
   const toggleKeyVisibility = (keyId: string) => {
-    const newVisibleKeys = new Set(visibleKeys)
-    if (newVisibleKeys.has(keyId)) {
-      newVisibleKeys.delete(keyId)
-    } else {
-      newVisibleKeys.add(keyId)
-    }
-    setVisibleKeys(newVisibleKeys)
+    setVisibleKeys((prev) => {
+      const newSet = new Set(prev)
+      if (newSet.has(keyId)) {
+        newSet.delete(keyId)
+      } else {
+        newSet.add(keyId)
+      }
+      return newSet
+    })
   }
 
-  const copyToClipboard = async (text: string, keyId: string) => {
-    try {
-      await navigator.clipboard.writeText(text)
-      setCopiedKey(keyId)
-      setTimeout(() => setCopiedKey(null), 2000)
-
-      toast({
-        title: "Copied",
-        description: "API key copied to clipboard",
-      })
-    } catch (error) {
-      toast({
-        title: "Error",
-        description: "Failed to copy to clipboard",
-        variant: "destructive",
-      })
-    }
+  const copyToClipboard = (text: string) => {
+    navigator.clipboard.writeText(text)
+    toast({
+      title: "Copied",
+      description: "Copied to clipboard",
+    })
   }
 
   const testApiConnection = async () => {
-    if (!testConfig.apiKey) {
+    if (!selectedApiKey || !selectedEndpoint) {
       toast({
         title: "Error",
-        description: "Please enter an API key",
+        description: "Please select an API key and endpoint",
         variant: "destructive",
       })
       return
     }
 
-    setIsTestingConnection(true)
-    const startTime = Date.now()
-
-    const newResult: TestResult = {
-      endpoint: testConfig.endpoint,
-      status: "pending",
-    }
-
-    setTestResults([newResult, ...testResults.slice(0, 4)])
-
+    setTestLoading(true)
     try {
-      // Simulate API call
-      await new Promise((resolve) => setTimeout(resolve, 2000))
+      // Simulate API test
+      await new Promise((resolve) => setTimeout(resolve, 1000))
 
-      const duration = Date.now() - startTime
-      const mockResponse = {
-        success: true,
-        data: { message: "API connection successful", timestamp: new Date().toISOString() },
-        meta: { total: 42, page: 1 },
+      const testResult: TestResult = {
+        id: Date.now().toString(),
+        endpoint: selectedEndpoint,
+        method: "GET",
+        status: Math.random() > 0.2 ? 200 : 401,
+        response: { message: "Test successful", timestamp: new Date().toISOString() },
+        timestamp: new Date().toISOString(),
       }
 
-      const updatedResult: TestResult = {
-        endpoint: testConfig.endpoint,
-        status: "success",
-        response: mockResponse,
-        duration,
+      setTestResults((prev) => [testResult, ...prev.slice(0, 9)])
+
+      if (testResult.status === 200) {
+        toast({
+          title: "Test Successful",
+          description: "API connection is working correctly",
+        })
+      } else {
+        toast({
+          title: "Test Failed",
+          description: "API connection failed. Check your API key permissions.",
+          variant: "destructive",
+        })
       }
-
-      setTestResults([updatedResult, ...testResults.slice(1)])
-
-      toast({
-        title: "Success",
-        description: `API test completed successfully in ${duration}ms`,
-      })
     } catch (error) {
-      const duration = Date.now() - startTime
-      const updatedResult: TestResult = {
-        endpoint: testConfig.endpoint,
-        status: "error",
-        error: "Connection failed: Invalid API key or endpoint",
-        duration,
-      }
-
-      setTestResults([updatedResult, ...testResults.slice(1)])
-
       toast({
         title: "Error",
-        description: "API test failed",
+        description: "Failed to test API connection",
         variant: "destructive",
       })
     } finally {
-      setIsTestingConnection(false)
+      setTestLoading(false)
     }
   }
 
-  const getStatusIcon = (status: TestResult["status"]) => {
-    switch (status) {
-      case "success":
-        return <CheckCircle className="w-4 h-4 text-green-500" />
-      case "error":
-        return <XCircle className="w-4 h-4 text-red-500" />
-      case "pending":
-        return <Clock className="w-4 h-4 text-yellow-500 animate-spin" />
-      default:
-        return <AlertCircle className="w-4 h-4 text-gray-500" />
-    }
-  }
+  const availablePermissions = [
+    "orders:read",
+    "orders:write",
+    "drivers:read",
+    "drivers:write",
+    "deliveries:read",
+    "analytics:read",
+    "webhooks:manage",
+  ]
 
-  const maskApiKey = (key: string) => {
-    return `${key.substring(0, 8)}${"*".repeat(16)}${key.substring(key.length - 4)}`
-  }
+  const apiEndpoints = [
+    { value: "/api/orders", label: "GET /api/orders - List Orders" },
+    { value: "/api/orders/create", label: "POST /api/orders - Create Order" },
+    { value: "/api/drivers", label: "GET /api/drivers - List Drivers" },
+    { value: "/api/deliveries", label: "GET /api/deliveries - List Deliveries" },
+    { value: "/api/analytics", label: "GET /api/analytics - Get Analytics" },
+  ]
 
   return (
     <DashboardLayout>
-      <div className="space-y-6">
+      <div className="space-y-8">
+        {/* Header */}
         <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-2xl font-bold">API Integrations</h1>
+            <h1 className="text-3xl font-bold tracking-tight">API Integrations</h1>
             <p className="text-muted-foreground">
               Manage API keys, test connections, and integrate with external systems
             </p>
           </div>
-          <Dialog open={newKeyDialog} onOpenChange={setNewKeyDialog}>
-            <DialogTrigger asChild>
-              <Button>
-                <Plus className="mr-2 h-4 w-4" />
-                Generate API Key
-              </Button>
-            </DialogTrigger>
-            <DialogContent className="sm:max-w-md">
-              <DialogHeader>
-                <DialogTitle>Generate New API Key</DialogTitle>
-                <DialogDescription>
-                  Create a new API key with specific permissions for your integration.
-                </DialogDescription>
-              </DialogHeader>
-              <div className="space-y-4">
-                <div className="space-y-2">
-                  <Label htmlFor="keyName">Key Name</Label>
-                  <Input
-                    id="keyName"
-                    placeholder="e.g., E-commerce Integration"
-                    value={newKeyName}
-                    onChange={(e) => setNewKeyName(e.target.value)}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label>Permissions</Label>
-                  <div className="grid grid-cols-1 gap-2 max-h-48 overflow-y-auto">
-                    {permissions.map((permission) => (
-                      <div key={permission.id} className="flex items-center space-x-2">
-                        <input
-                          type="checkbox"
-                          id={permission.id}
-                          checked={newKeyPermissions.includes(permission.id)}
-                          onChange={(e) => {
-                            if (e.target.checked) {
-                              setNewKeyPermissions([...newKeyPermissions, permission.id])
-                            } else {
-                              setNewKeyPermissions(newKeyPermissions.filter((p) => p !== permission.id))
-                            }
-                          }}
-                          className="rounded border-gray-300"
-                        />
-                        <div className="flex-1">
-                          <Label htmlFor={permission.id} className="text-sm font-medium">
-                            {permission.label}
-                          </Label>
-                          <p className="text-xs text-muted-foreground">{permission.description}</p>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              </div>
-              <DialogFooter>
-                <Button variant="outline" onClick={() => setNewKeyDialog(false)}>
-                  Cancel
-                </Button>
-                <Button onClick={generateApiKey} disabled={loading}>
-                  {loading ? <RefreshCw className="mr-2 h-4 w-4 animate-spin" /> : <Key className="mr-2 h-4 w-4" />}
-                  Generate Key
-                </Button>
-              </DialogFooter>
-            </DialogContent>
-          </Dialog>
+          <Button onClick={() => window.open("/api-docs", "_blank")}>
+            <BookOpen className="mr-2 h-4 w-4" />
+            View Documentation
+          </Button>
         </div>
 
-        <Tabs defaultValue="overview" className="space-y-4">
-          <TabsList className="grid w-full grid-cols-5">
-            <TabsTrigger value="overview">Overview</TabsTrigger>
-            <TabsTrigger value="api-keys">API Keys</TabsTrigger>
+        {/* Overview Stats */}
+        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+          <Card>
+            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+              <CardTitle className="text-sm font-medium">API Keys</CardTitle>
+              <Key className="h-4 w-4 text-muted-foreground" />
+            </CardHeader>
+            <CardContent>
+              <div className="text-2xl font-bold">{stats.totalKeys}</div>
+              <p className="text-xs text-muted-foreground">{stats.activeKeys} active</p>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+              <CardTitle className="text-sm font-medium">Available APIs</CardTitle>
+              <Globe className="h-4 w-4 text-muted-foreground" />
+            </CardHeader>
+            <CardContent>
+              <div className="text-2xl font-bold">{stats.totalApis}</div>
+              <p className="text-xs text-muted-foreground">Endpoints ready</p>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+              <CardTitle className="text-sm font-medium">Test Results</CardTitle>
+              <TestTube className="h-4 w-4 text-muted-foreground" />
+            </CardHeader>
+            <CardContent>
+              <div className="text-2xl font-bold">{testResults.length}</div>
+              <p className="text-xs text-muted-foreground">{stats.successfulTests} successful</p>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+              <CardTitle className="text-sm font-medium">Integration Guides</CardTitle>
+              <BookOpen className="h-4 w-4 text-muted-foreground" />
+            </CardHeader>
+            <CardContent>
+              <div className="text-2xl font-bold">3</div>
+              <p className="text-xs text-muted-foreground">Step-by-step guides</p>
+            </CardContent>
+          </Card>
+        </div>
+
+        {/* Main Content Tabs */}
+        <Tabs defaultValue="keys" className="space-y-6">
+          <TabsList className="grid w-full grid-cols-4">
+            <TabsTrigger value="keys">API Keys</TabsTrigger>
             <TabsTrigger value="testing">Testing</TabsTrigger>
-            <TabsTrigger value="documentation">Documentation</TabsTrigger>
-            <TabsTrigger value="scenarios">Integration Guides</TabsTrigger>
+            <TabsTrigger value="docs">Documentation</TabsTrigger>
+            <TabsTrigger value="guides">Integration Guides</TabsTrigger>
           </TabsList>
 
-          <TabsContent value="overview" className="space-y-4">
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-              <Card>
-                <CardContent className="p-6">
-                  <div className="flex items-center space-x-2">
-                    <Key className="h-8 w-8 text-blue-500" />
-                    <div>
-                      <p className="text-2xl font-bold">{apiKeys.length}</p>
-                      <p className="text-sm text-muted-foreground">API Keys</p>
+          {/* API Keys Tab */}
+          <TabsContent value="keys" className="space-y-6">
+            <div className="flex items-center justify-between">
+              <h2 className="text-xl font-semibold">API Key Management</h2>
+              <Dialog open={createKeyOpen} onOpenChange={setCreateKeyOpen}>
+                <DialogTrigger asChild>
+                  <Button>
+                    <Plus className="mr-2 h-4 w-4" />
+                    Create API Key
+                  </Button>
+                </DialogTrigger>
+                <DialogContent>
+                  <DialogHeader>
+                    <DialogTitle>Create New API Key</DialogTitle>
+                    <DialogDescription>
+                      Generate a new API key with specific permissions for your integration.
+                    </DialogDescription>
+                  </DialogHeader>
+                  <div className="space-y-4">
+                    <div className="space-y-2">
+                      <Label htmlFor="keyName">Key Name</Label>
+                      <Input
+                        id="keyName"
+                        placeholder="e.g., E-commerce Integration"
+                        value={newKeyName}
+                        onChange={(e) => setNewKeyName(e.target.value)}
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Permissions</Label>
+                      <div className="grid grid-cols-2 gap-2">
+                        {availablePermissions.map((permission) => (
+                          <div key={permission} className="flex items-center space-x-2">
+                            <input
+                              type="checkbox"
+                              id={permission}
+                              checked={newKeyPermissions.includes(permission)}
+                              onChange={(e) => {
+                                if (e.target.checked) {
+                                  setNewKeyPermissions((prev) => [...prev, permission])
+                                } else {
+                                  setNewKeyPermissions((prev) => prev.filter((p) => p !== permission))
+                                }
+                              }}
+                              className="rounded border-gray-300"
+                            />
+                            <Label htmlFor={permission} className="text-sm">
+                              {permission}
+                            </Label>
+                          </div>
+                        ))}
+                      </div>
                     </div>
                   </div>
-                </CardContent>
-              </Card>
-              <Card>
-                <CardContent className="p-6">
-                  <div className="flex items-center space-x-2">
-                    <Database className="h-8 w-8 text-green-500" />
-                    <div>
-                      <p className="text-2xl font-bold">{availableApis.length}</p>
-                      <p className="text-sm text-muted-foreground">Available APIs</p>
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
-              <Card>
-                <CardContent className="p-6">
-                  <div className="flex items-center space-x-2">
-                    <CheckCircle className="h-8 w-8 text-green-500" />
-                    <div>
-                      <p className="text-2xl font-bold">{testResults.filter((r) => r.status === "success").length}</p>
-                      <p className="text-sm text-muted-foreground">Successful Tests</p>
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
-              <Card>
-                <CardContent className="p-6">
-                  <div className="flex items-center space-x-2">
-                    <Zap className="h-8 w-8 text-purple-500" />
-                    <div>
-                      <p className="text-2xl font-bold">{integrationScenarios.length}</p>
-                      <p className="text-sm text-muted-foreground">Integration Guides</p>
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
+                  <DialogFooter>
+                    <Button variant="outline" onClick={() => setCreateKeyOpen(false)}>
+                      Cancel
+                    </Button>
+                    <Button onClick={createApiKey}>Create Key</Button>
+                  </DialogFooter>
+                </DialogContent>
+              </Dialog>
             </div>
 
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-              <Card>
-                <CardHeader>
-                  <CardTitle>Available APIs</CardTitle>
-                  <CardDescription>APIs ready for integration</CardDescription>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  {availableApis.map((api) => (
-                    <div key={api.id} className="flex items-center justify-between p-3 border rounded-lg">
-                      <div className="flex items-center space-x-3">
-                        {api.icon}
-                        <div>
-                          <h4 className="font-medium">{api.name}</h4>
-                          <p className="text-sm text-muted-foreground">{api.description}</p>
-                        </div>
+            <div className="grid gap-4">
+              {loading ? (
+                <Card>
+                  <CardContent className="p-6">
+                    <div className="text-center">Loading API keys...</div>
+                  </CardContent>
+                </Card>
+              ) : apiKeys.length === 0 ? (
+                <Card>
+                  <CardContent className="p-6">
+                    <div className="text-center space-y-4">
+                      <Key className="mx-auto h-12 w-12 text-muted-foreground" />
+                      <div>
+                        <h3 className="text-lg font-medium">No API Keys</h3>
+                        <p className="text-muted-foreground">
+                          Create your first API key to start integrating with external systems.
+                        </p>
                       </div>
-                      <Badge variant={api.status === "active" ? "default" : "secondary"}>{api.status}</Badge>
                     </div>
-                  ))}
-                </CardContent>
-              </Card>
-
-              <Card>
-                <CardHeader>
-                  <CardTitle>Recent Test Results</CardTitle>
-                  <CardDescription>Latest API connection tests</CardDescription>
-                </CardHeader>
-                <CardContent className="space-y-3">
-                  {testResults.length === 0 ? (
-                    <p className="text-sm text-muted-foreground text-center py-4">
-                      No tests run yet. Use the Testing tab to validate your API connections.
-                    </p>
-                  ) : (
-                    testResults.slice(0, 5).map((result, index) => (
-                      <div key={index} className="flex items-center justify-between p-2 border rounded">
-                        <div className="flex items-center space-x-2">
-                          {getStatusIcon(result.status)}
-                          <span className="text-sm font-mono">{result.endpoint}</span>
+                  </CardContent>
+                </Card>
+              ) : (
+                apiKeys.map((apiKey) => (
+                  <Card key={apiKey.id}>
+                    <CardContent className="p-6">
+                      <div className="flex items-center justify-between">
+                        <div className="space-y-2">
+                          <div className="flex items-center gap-2">
+                            <h3 className="font-medium">{apiKey.name}</h3>
+                            <Badge variant={apiKey.is_active ? "default" : "secondary"}>
+                              {apiKey.is_active ? "Active" : "Inactive"}
+                            </Badge>
+                          </div>
+                          <div className="flex items-center gap-2 font-mono text-sm">
+                            <span>{visibleKeys.has(apiKey.id) ? apiKey.key : "•".repeat(32)}</span>
+                            <Button variant="ghost" size="sm" onClick={() => toggleKeyVisibility(apiKey.id)}>
+                              {visibleKeys.has(apiKey.id) ? (
+                                <EyeOff className="h-4 w-4" />
+                              ) : (
+                                <Eye className="h-4 w-4" />
+                              )}
+                            </Button>
+                            <Button variant="ghost" size="sm" onClick={() => copyToClipboard(apiKey.key)}>
+                              <Copy className="h-4 w-4" />
+                            </Button>
+                          </div>
+                          <div className="flex flex-wrap gap-1">
+                            {apiKey.permissions.map((permission) => (
+                              <Badge key={permission} variant="outline" className="text-xs">
+                                {permission}
+                              </Badge>
+                            ))}
+                          </div>
+                          <p className="text-xs text-muted-foreground">
+                            Created {new Date(apiKey.created_at).toLocaleDateString()}
+                            {apiKey.last_used_at && (
+                              <> • Last used {new Date(apiKey.last_used_at).toLocaleDateString()}</>
+                            )}
+                          </p>
                         </div>
-                        {result.duration && <span className="text-xs text-muted-foreground">{result.duration}ms</span>}
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => deleteApiKey(apiKey.id)}
+                          className="text-destructive hover:text-destructive"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
                       </div>
-                    ))
-                  )}
-                </CardContent>
-              </Card>
+                    </CardContent>
+                  </Card>
+                ))
+              )}
             </div>
           </TabsContent>
 
-          <TabsContent value="api-keys" className="space-y-4">
-            <Card>
-              <CardHeader>
-                <CardTitle>API Keys Management</CardTitle>
-                <CardDescription>
-                  Generate and manage API keys for secure access to your delivery system
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
-                {loading && apiKeys.length === 0 ? (
-                  <div className="flex items-center justify-center py-8">
-                    <RefreshCw className="h-6 w-6 animate-spin mr-2" />
-                    Loading API keys...
+          {/* Testing Tab */}
+          <TabsContent value="testing" className="space-y-6">
+            <div>
+              <h2 className="text-xl font-semibold mb-4">API Connection Testing</h2>
+              <Card>
+                <CardHeader>
+                  <CardTitle>Test API Endpoints</CardTitle>
+                  <CardDescription>Validate your API keys and test endpoint connectivity</CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <Label>API Key</Label>
+                      <Select value={selectedApiKey} onValueChange={setSelectedApiKey}>
+                        <SelectTrigger>
+                          <SelectValue placeholder="Select an API key" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {apiKeys
+                            .filter((key) => key.is_active)
+                            .map((key) => (
+                              <SelectItem key={key.id} value={key.id}>
+                                {key.name}
+                              </SelectItem>
+                            ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Endpoint</Label>
+                      <Select value={selectedEndpoint} onValueChange={setSelectedEndpoint}>
+                        <SelectTrigger>
+                          <SelectValue placeholder="Select an endpoint" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {apiEndpoints.map((endpoint) => (
+                            <SelectItem key={endpoint.value} value={endpoint.value}>
+                              {endpoint.label}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
                   </div>
-                ) : apiKeys.length === 0 ? (
-                  <div className="text-center py-8">
-                    <Key className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
-                    <h3 className="text-lg font-medium mb-2">No API Keys</h3>
-                    <p className="text-muted-foreground mb-4">
-                      Generate your first API key to start integrating with external systems.
-                    </p>
-                    <Button onClick={() => setNewKeyDialog(true)}>
-                      <Plus className="mr-2 h-4 w-4" />
-                      Generate API Key
-                    </Button>
-                  </div>
-                ) : (
-                  <div className="space-y-4">
-                    {apiKeys.map((apiKey) => (
-                      <div key={apiKey.id} className="border rounded-lg p-4">
-                        <div className="flex items-center justify-between mb-3">
-                          <div className="flex items-center space-x-3">
+                  <Button onClick={testApiConnection} disabled={testLoading}>
+                    {testLoading ? (
+                      <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
+                    ) : (
+                      <TestTube className="mr-2 h-4 w-4" />
+                    )}
+                    Test Connection
+                  </Button>
+                </CardContent>
+              </Card>
+            </div>
+
+            {/* Test Results */}
+            {testResults.length > 0 && (
+              <div>
+                <h3 className="text-lg font-medium mb-4">Recent Test Results</h3>
+                <div className="space-y-2">
+                  {testResults.map((result) => (
+                    <Card key={result.id}>
+                      <CardContent className="p-4">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-3">
+                            {result.status >= 200 && result.status < 300 ? (
+                              <CheckCircle className="h-5 w-5 text-green-500" />
+                            ) : result.status >= 400 ? (
+                              <XCircle className="h-5 w-5 text-red-500" />
+                            ) : (
+                              <AlertTriangle className="h-5 w-5 text-yellow-500" />
+                            )}
                             <div>
-                              <h4 className="font-medium">{apiKey.name}</h4>
+                              <p className="font-medium">
+                                {result.method} {result.endpoint}
+                              </p>
                               <p className="text-sm text-muted-foreground">
-                                Created {new Date(apiKey.created_at).toLocaleDateString()}
-                                {apiKey.last_used && (
-                                  <span> • Last used {new Date(apiKey.last_used).toLocaleDateString()}</span>
-                                )}
+                                Status: {result.status} • {new Date(result.timestamp).toLocaleString()}
                               </p>
                             </div>
                           </div>
-                          <div className="flex items-center space-x-2">
-                            <Badge variant={apiKey.status === "active" ? "default" : "secondary"}>
-                              {apiKey.status}
-                            </Badge>
-                            <AlertDialog>
-                              <AlertDialogTrigger asChild>
-                                <Button variant="outline" size="sm">
-                                  <Trash2 className="h-4 w-4" />
-                                </Button>
-                              </AlertDialogTrigger>
-                              <AlertDialogContent>
-                                <AlertDialogHeader>
-                                  <AlertDialogTitle>Delete API Key</AlertDialogTitle>
-                                  <AlertDialogDescription>
-                                    Are you sure you want to delete this API key? This action cannot be undone and will
-                                    immediately revoke access for any applications using this key.
-                                  </AlertDialogDescription>
-                                </AlertDialogHeader>
-                                <AlertDialogFooter>
-                                  <AlertDialogCancel>Cancel</AlertDialogCancel>
-                                  <AlertDialogAction
-                                    onClick={() => deleteApiKey(apiKey.id)}
-                                    className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-                                  >
-                                    Delete
-                                  </AlertDialogAction>
-                                </AlertDialogFooter>
-                              </AlertDialogContent>
-                            </AlertDialog>
-                          </div>
+                          <Badge variant={result.status >= 200 && result.status < 300 ? "default" : "destructive"}>
+                            {result.status}
+                          </Badge>
                         </div>
-
-                        <div className="space-y-3">
-                          <div>
-                            <Label className="text-sm font-medium">API Key</Label>
-                            <div className="flex items-center space-x-2 mt-1">
-                              <Input
-                                value={visibleKeys.has(apiKey.id) ? apiKey.key : maskApiKey(apiKey.key)}
-                                readOnly
-                                className="font-mono text-sm"
-                              />
-                              <Button variant="outline" size="sm" onClick={() => toggleKeyVisibility(apiKey.id)}>
-                                {visibleKeys.has(apiKey.id) ? (
-                                  <EyeOff className="h-4 w-4" />
-                                ) : (
-                                  <Eye className="h-4 w-4" />
-                                )}
-                              </Button>
-                              <Button
-                                variant="outline"
-                                size="sm"
-                                onClick={() => copyToClipboard(apiKey.key, apiKey.id)}
-                              >
-                                {copiedKey === apiKey.id ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
-                              </Button>
-                            </div>
-                          </div>
-
-                          <div>
-                            <Label className="text-sm font-medium">Permissions</Label>
-                            <div className="flex flex-wrap gap-1 mt-1">
-                              {apiKey.permissions.map((permission) => (
-                                <Badge key={permission} variant="outline" className="text-xs">
-                                  {permission}
-                                </Badge>
-                              ))}
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </CardContent>
-            </Card>
+                      </CardContent>
+                    </Card>
+                  ))}
+                </div>
+              </div>
+            )}
           </TabsContent>
 
-          <TabsContent value="testing" className="space-y-4">
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-              <Card>
-                <CardHeader>
-                  <CardTitle>API Connection Tester</CardTitle>
-                  <CardDescription>Test your API keys and validate connections</CardDescription>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  <div className="space-y-2">
-                    <Label htmlFor="testApiKey">API Key</Label>
-                    <Select
-                      value={testConfig.apiKey}
-                      onValueChange={(value) => setTestConfig({ ...testConfig, apiKey: value })}
-                    >
-                      <SelectTrigger>
-                        <SelectValue placeholder="Select an API key" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {apiKeys.map((key) => (
-                          <SelectItem key={key.id} value={key.key}>
-                            {key.name}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-
-                  <div className="space-y-2">
-                    <Label htmlFor="testEndpoint">Endpoint</Label>
-                    <Select
-                      value={testConfig.endpoint}
-                      onValueChange={(value) => setTestConfig({ ...testConfig, endpoint: value })}
-                    >
-                      <SelectTrigger>
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {availableApis.flatMap((api) =>
-                          api.endpoints.map((endpoint) => (
-                            <SelectItem key={endpoint.path} value={endpoint.path}>
-                              {endpoint.method} {endpoint.path}
-                            </SelectItem>
-                          )),
-                        )}
-                      </SelectContent>
-                    </Select>
-                  </div>
-
-                  <div className="space-y-2">
-                    <Label htmlFor="testMethod">Method</Label>
-                    <Select
-                      value={testConfig.method}
-                      onValueChange={(value) => setTestConfig({ ...testConfig, method: value })}
-                    >
-                      <SelectTrigger>
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="GET">GET</SelectItem>
-                        <SelectItem value="POST">POST</SelectItem>
-                        <SelectItem value="PUT">PUT</SelectItem>
-                        <SelectItem value="DELETE">DELETE</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-
-                  {(testConfig.method === "POST" || testConfig.method === "PUT") && (
-                    <div className="space-y-2">
-                      <Label htmlFor="testPayload">Request Payload (JSON)</Label>
-                      <Textarea
-                        id="testPayload"
-                        placeholder='{"key": "value"}'
-                        value={testConfig.payload}
-                        onChange={(e) => setTestConfig({ ...testConfig, payload: e.target.value })}
-                        rows={4}
-                      />
-                    </div>
-                  )}
-
-                  <Button onClick={testApiConnection} disabled={isTestingConnection} className="w-full">
-                    {isTestingConnection ? (
-                      <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
-                    ) : (
-                      <Play className="mr-2 h-4 w-4" />
-                    )}
-                    {isTestingConnection ? "Testing..." : "Test Connection"}
-                  </Button>
-                </CardContent>
-              </Card>
-
-              <Card>
-                <CardHeader>
-                  <CardTitle>Test Results</CardTitle>
-                  <CardDescription>Recent API test results and responses</CardDescription>
-                </CardHeader>
-                <CardContent>
-                  {testResults.length === 0 ? (
-                    <div className="text-center py-8">
-                      <TestTube className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
-                      <p className="text-muted-foreground">No tests run yet</p>
-                    </div>
-                  ) : (
-                    <div className="space-y-4">
-                      {testResults.map((result, index) => (
-                        <div key={index} className="border rounded-lg p-3">
-                          <div className="flex items-center justify-between mb-2">
-                            <div className="flex items-center space-x-2">
-                              {getStatusIcon(result.status)}
-                              <span className="font-mono text-sm">{result.endpoint}</span>
-                            </div>
-                            {result.duration && (
-                              <span className="text-xs text-muted-foreground">{result.duration}ms</span>
-                            )}
-                          </div>
-
-                          {result.response && (
-                            <div className="mt-2">
-                              <Label className="text-xs text-muted-foreground">Response</Label>
-                              <pre className="text-xs bg-muted p-2 rounded mt-1 overflow-x-auto">
-                                {JSON.stringify(result.response, null, 2)}
-                              </pre>
-                            </div>
-                          )}
-
-                          {result.error && (
-                            <div className="mt-2">
-                              <Label className="text-xs text-red-600">Error</Label>
-                              <p className="text-xs text-red-600 bg-red-50 p-2 rounded mt-1">{result.error}</p>
-                            </div>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </CardContent>
-              </Card>
-            </div>
-          </TabsContent>
-
-          <TabsContent value="documentation" className="space-y-4">
-            <div className="grid grid-cols-1 gap-6">
-              {availableApis.map((api) => (
-                <Card key={api.id}>
+          {/* Documentation Tab */}
+          <TabsContent value="docs" className="space-y-6">
+            <div>
+              <h2 className="text-xl font-semibold mb-4">API Documentation</h2>
+              <div className="grid gap-6">
+                <Card>
                   <CardHeader>
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center space-x-3">
-                        {api.icon}
-                        <div>
-                          <CardTitle>{api.name}</CardTitle>
-                          <CardDescription>{api.description}</CardDescription>
-                        </div>
+                    <CardTitle>Authentication</CardTitle>
+                    <CardDescription>How to authenticate your API requests</CardDescription>
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    <p>Include your API key in the Authorization header:</p>
+                    <div className="bg-muted p-4 rounded-lg font-mono text-sm">
+                      <div className="flex items-center justify-between">
+                        <span>Authorization: Bearer YOUR_API_KEY</span>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => copyToClipboard("Authorization: Bearer YOUR_API_KEY")}
+                        >
+                          <Copy className="h-4 w-4" />
+                        </Button>
                       </div>
-                      <Badge variant={api.status === "active" ? "default" : "secondary"}>{api.status}</Badge>
                     </div>
+                  </CardContent>
+                </Card>
+
+                <Card>
+                  <CardHeader>
+                    <CardTitle>Available Endpoints</CardTitle>
+                    <CardDescription>Complete list of API endpoints</CardDescription>
                   </CardHeader>
                   <CardContent>
                     <div className="space-y-4">
-                      <h4 className="font-medium">Available Endpoints</h4>
-                      <div className="space-y-2">
-                        {api.endpoints.map((endpoint, index) => (
-                          <div key={index} className="flex items-center justify-between p-3 bg-muted rounded-lg">
-                            <div className="flex items-center space-x-3">
-                              <Badge
-                                variant="outline"
-                                className={
-                                  endpoint.method === "GET"
-                                    ? "border-green-500 text-green-600"
-                                    : endpoint.method === "POST"
-                                      ? "border-blue-500 text-blue-600"
-                                      : endpoint.method === "PUT"
-                                        ? "border-yellow-500 text-yellow-600"
-                                        : "border-red-500 text-red-600"
-                                }
-                              >
-                                {endpoint.method}
-                              </Badge>
-                              <code className="text-sm">{endpoint.path}</code>
-                            </div>
-                            <p className="text-sm text-muted-foreground">{endpoint.description}</p>
+                      {[
+                        { method: "GET", endpoint: "/api/orders", description: "List all orders" },
+                        { method: "POST", endpoint: "/api/orders", description: "Create a new order" },
+                        { method: "GET", endpoint: "/api/orders/{id}", description: "Get order details" },
+                        { method: "PUT", endpoint: "/api/orders/{id}", description: "Update order" },
+                        { method: "GET", endpoint: "/api/drivers", description: "List all drivers" },
+                        { method: "GET", endpoint: "/api/deliveries", description: "List deliveries" },
+                      ].map((api, index) => (
+                        <div key={index} className="flex items-center justify-between p-3 border rounded-lg">
+                          <div className="flex items-center gap-3">
+                            <Badge
+                              variant={
+                                api.method === "GET"
+                                  ? "default"
+                                  : api.method === "POST"
+                                    ? "secondary"
+                                    : api.method === "PUT"
+                                      ? "outline"
+                                      : "destructive"
+                              }
+                            >
+                              {api.method}
+                            </Badge>
+                            <code className="font-mono text-sm">{api.endpoint}</code>
+                            <span className="text-muted-foreground">{api.description}</span>
                           </div>
-                        ))}
+                          <Button variant="ghost" size="sm" onClick={() => copyToClipboard(api.endpoint)}>
+                            <Copy className="h-4 w-4" />
+                          </Button>
+                        </div>
+                      ))}
+                    </div>
+                  </CardContent>
+                </Card>
+              </div>
+            </div>
+          </TabsContent>
+
+          {/* Integration Guides Tab */}
+          <TabsContent value="guides" className="space-y-6">
+            <div>
+              <h2 className="text-xl font-semibold mb-4">Integration Scenarios</h2>
+              <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="flex items-center gap-2">
+                      <Globe className="h-5 w-5" />
+                      E-commerce Integration
+                    </CardTitle>
+                    <CardDescription>Connect your online store to automatically create delivery orders</CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="space-y-3">
+                      <Badge>Beginner</Badge>
+                      <p className="text-sm text-muted-foreground">
+                        Step-by-step guide to integrate with popular e-commerce platforms
+                      </p>
+                      <div className="space-y-2">
+                        <p className="text-sm font-medium">What you'll learn:</p>
+                        <ul className="text-sm text-muted-foreground space-y-1">
+                          <li>• Setting up webhooks</li>
+                          <li>• Order synchronization</li>
+                          <li>• Status updates</li>
+                        </ul>
                       </div>
                     </div>
                   </CardContent>
                 </Card>
-              ))}
+
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="flex items-center gap-2">
+                      <Smartphone className="h-5 w-5" />
+                      Mobile App Integration
+                    </CardTitle>
+                    <CardDescription>Build a mobile app that connects to your delivery system</CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="space-y-3">
+                      <Badge variant="secondary">Intermediate</Badge>
+                      <p className="text-sm text-muted-foreground">
+                        Create a customer-facing mobile app with real-time tracking
+                      </p>
+                      <div className="space-y-2">
+                        <p className="text-sm font-medium">What you'll learn:</p>
+                        <ul className="text-sm text-muted-foreground space-y-1">
+                          <li>• Real-time tracking</li>
+                          <li>• Push notifications</li>
+                          <li>• Order management</li>
+                        </ul>
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="flex items-center gap-2">
+                      <Warehouse className="h-5 w-5" />
+                      Warehouse Management
+                    </CardTitle>
+                    <CardDescription>
+                      Integrate with warehouse management systems for automated fulfillment
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="space-y-3">
+                      <Badge variant="outline">Advanced</Badge>
+                      <p className="text-sm text-muted-foreground">
+                        Advanced integration with inventory and fulfillment systems
+                      </p>
+                      <div className="space-y-2">
+                        <p className="text-sm font-medium">What you'll learn:</p>
+                        <ul className="text-sm text-muted-foreground space-y-1">
+                          <li>• Inventory sync</li>
+                          <li>• Automated routing</li>
+                          <li>• Analytics integration</li>
+                        </ul>
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+              </div>
             </div>
 
+            {/* Code Examples */}
             <Card>
               <CardHeader>
-                <CardTitle>Authentication</CardTitle>
-                <CardDescription>How to authenticate your API requests</CardDescription>
+                <CardTitle>Quick Start Code Examples</CardTitle>
+                <CardDescription>Copy and paste these examples to get started quickly</CardDescription>
               </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="bg-muted p-4 rounded-lg">
-                  <h4 className="font-medium mb-2">Authorization Header</h4>
-                  <code className="text-sm">Authorization: Bearer YOUR_API_KEY</code>
-                </div>
+              <CardContent>
+                <Tabs defaultValue="javascript" className="space-y-4">
+                  <TabsList>
+                    <TabsTrigger value="javascript">JavaScript</TabsTrigger>
+                    <TabsTrigger value="python">Python</TabsTrigger>
+                    <TabsTrigger value="curl">cURL</TabsTrigger>
+                  </TabsList>
 
-                <div className="bg-muted p-4 rounded-lg">
-                  <h4 className="font-medium mb-2">Example Request</h4>
-                  <pre className="text-sm overflow-x-auto">
-                    {`curl -X GET "https://your-domain.com/api/deliveries" \\
-  -H "Authorization: Bearer sk_live_1234567890abcdef" \\
-  -H "Content-Type: application/json"`}
-                  </pre>
-                </div>
-              </CardContent>
-            </Card>
-          </TabsContent>
-
-          <TabsContent value="scenarios" className="space-y-4">
-            <div className="grid grid-cols-1 gap-6">
-              {integrationScenarios.map((scenario, index) => (
-                <Card key={index}>
-                  <CardHeader>
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <CardTitle>{scenario.title}</CardTitle>
-                        <CardDescription>{scenario.description}</CardDescription>
-                      </div>
-                      <Badge
-                        variant={
-                          scenario.difficulty === "Beginner"
-                            ? "default"
-                            : scenario.difficulty === "Intermediate"
-                              ? "secondary"
-                              : "destructive"
-                        }
-                      >
-                        {scenario.difficulty}
-                      </Badge>
-                    </div>
-                  </CardHeader>
-                  <CardContent className="space-y-4">
-                    <div>
-                      <h4 className="font-medium mb-2">Implementation Steps</h4>
-                      <ol className="list-decimal list-inside space-y-1 text-sm text-muted-foreground">
-                        {scenario.steps.map((step, stepIndex) => (
-                          <li key={stepIndex}>{step}</li>
-                        ))}
-                      </ol>
-                    </div>
-
-                    <div>
-                      <h4 className="font-medium mb-2">Code Example</h4>
+                  <TabsContent value="javascript">
+                    <div className="space-y-4">
                       <div className="bg-muted p-4 rounded-lg">
+                        <div className="flex items-center justify-between mb-2">
+                          <span className="text-sm font-medium">Create Order</span>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() =>
+                              copyToClipboard(`const response = await fetch('/api/orders', {
+  method: 'POST',
+  headers: {
+    'Authorization': 'Bearer YOUR_API_KEY',
+    'Content-Type': 'application/json'
+  },
+  body: JSON.stringify({
+    customer_name: 'John Doe',
+    delivery_address: '123 Main St',
+    priority: 'normal'
+  })
+});`)
+                            }
+                          >
+                            <Copy className="h-4 w-4" />
+                          </Button>
+                        </div>
                         <pre className="text-sm overflow-x-auto">
-                          <code>{scenario.codeExample}</code>
+                          {`const response = await fetch('/api/orders', {
+  method: 'POST',
+  headers: {
+    'Authorization': 'Bearer YOUR_API_KEY',
+    'Content-Type': 'application/json'
+  },
+  body: JSON.stringify({
+    customer_name: 'John Doe',
+    delivery_address: '123 Main St',
+    priority: 'normal'
+  })
+});`}
                         </pre>
                       </div>
                     </div>
-                  </CardContent>
-                </Card>
-              ))}
-            </div>
+                  </TabsContent>
 
-            <Card>
-              <CardHeader>
-                <CardTitle>Need Help?</CardTitle>
-                <CardDescription>Additional resources and support</CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                  <Button variant="outline" className="h-auto p-4 flex flex-col items-center space-y-2">
-                    <BookOpen className="h-6 w-6" />
-                    <span>Full Documentation</span>
-                  </Button>
-                  <Button variant="outline" className="h-auto p-4 flex flex-col items-center space-y-2">
-                    <ExternalLink className="h-6 w-6" />
-                    <span>API Reference</span>
-                  </Button>
-                  <Button variant="outline" className="h-auto p-4 flex flex-col items-center space-y-2">
-                    <Settings className="h-6 w-6" />
-                    <span>Contact Support</span>
-                  </Button>
-                </div>
+                  <TabsContent value="python">
+                    <div className="space-y-4">
+                      <div className="bg-muted p-4 rounded-lg">
+                        <div className="flex items-center justify-between mb-2">
+                          <span className="text-sm font-medium">Create Order</span>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() =>
+                              copyToClipboard(`import requests
+
+response = requests.post('/api/orders', 
+  headers={'Authorization': 'Bearer YOUR_API_KEY'},
+  json={
+    'customer_name': 'John Doe',
+    'delivery_address': '123 Main St',
+    'priority': 'normal'
+  }
+)`)
+                            }
+                          >
+                            <Copy className="h-4 w-4" />
+                          </Button>
+                        </div>
+                        <pre className="text-sm overflow-x-auto">
+                          {`import requests
+
+response = requests.post('/api/orders', 
+  headers={'Authorization': 'Bearer YOUR_API_KEY'},
+  json={
+    'customer_name': 'John Doe',
+    'delivery_address': '123 Main St',
+    'priority': 'normal'
+  }
+)`}
+                        </pre>
+                      </div>
+                    </div>
+                  </TabsContent>
+
+                  <TabsContent value="curl">
+                    <div className="space-y-4">
+                      <div className="bg-muted p-4 rounded-lg">
+                        <div className="flex items-center justify-between mb-2">
+                          <span className="text-sm font-medium">Create Order</span>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() =>
+                              copyToClipboard(`curl -X POST /api/orders \\
+  -H "Authorization: Bearer YOUR_API_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "customer_name": "John Doe",
+    "delivery_address": "123 Main St",
+    "priority": "normal"
+  }'`)
+                            }
+                          >
+                            <Copy className="h-4 w-4" />
+                          </Button>
+                        </div>
+                        <pre className="text-sm overflow-x-auto">
+                          {`curl -X POST /api/orders \\
+  -H "Authorization: Bearer YOUR_API_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "customer_name": "John Doe",
+    "delivery_address": "123 Main St",
+    "priority": "normal"
+  }'`}
+                        </pre>
+                      </div>
+                    </div>
+                  </TabsContent>
+                </Tabs>
               </CardContent>
             </Card>
           </TabsContent>

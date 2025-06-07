@@ -1,115 +1,111 @@
 import { type NextRequest, NextResponse } from "next/server"
-import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs"
-import { cookies } from "next/headers"
+import { createServerSupabaseClient } from "@/lib/supabase"
+import crypto from "crypto"
 
 export async function GET(request: NextRequest) {
   try {
-    const supabase = createRouteHandlerClient({ cookies })
+    const supabaseServer = createServerSupabaseClient()
 
     // Get the current user
     const {
       data: { user },
-      error: userError,
-    } = await supabase.auth.getUser()
+      error: authError,
+    } = await supabaseServer.auth.getUser()
 
-    if (userError || !user) {
+    if (authError || !user) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
     }
 
     // Get user profile to check role
-    const { data: profile, error: profileError } = await supabase
-      .from("profiles")
+    const { data: profile, error: profileError } = await supabaseServer
+      .from("user_profiles")
       .select("role")
-      .eq("id", user.id)
+      .eq("user_id", user.id)
       .single()
 
-    if (profileError || !profile) {
-      return NextResponse.json({ error: "Profile not found" }, { status: 404 })
+    if (profileError || profile?.role !== "admin") {
+      return NextResponse.json({ error: "Forbidden" }, { status: 403 })
     }
 
-    // Only admins and super_admins can manage API keys
-    if (!["admin", "super_admin"].includes(profile.role)) {
-      return NextResponse.json({ error: "Insufficient permissions" }, { status: 403 })
-    }
-
-    // Get API keys for the organization
-    const { data: apiKeys, error: keysError } = await supabase
+    // Fetch API keys for this admin
+    const { data: apiKeys, error } = await supabaseServer
       .from("api_keys")
       .select("*")
+      .eq("admin_id", user.id)
       .order("created_at", { ascending: false })
 
-    if (keysError) {
-      console.error("Error fetching API keys:", keysError)
-      return NextResponse.json({ error: "Failed to fetch API keys" }, { status: 500 })
+    if (error) {
+      throw error
     }
 
-    return NextResponse.json({ apiKeys })
+    return NextResponse.json({ apiKeys: apiKeys || [] })
   } catch (error) {
-    console.error("Error in API keys route:", error)
+    console.error("Error fetching API keys:", error)
     return NextResponse.json({ error: "Internal server error" }, { status: 500 })
   }
 }
 
 export async function POST(request: NextRequest) {
   try {
-    const supabase = createRouteHandlerClient({ cookies })
+    const supabaseServer = createServerSupabaseClient()
 
     // Get the current user
     const {
       data: { user },
-      error: userError,
-    } = await supabase.auth.getUser()
+      error: authError,
+    } = await supabaseServer.auth.getUser()
 
-    if (userError || !user) {
+    if (authError || !user) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
     }
 
     // Get user profile to check role
-    const { data: profile, error: profileError } = await supabase
-      .from("profiles")
+    const { data: profile, error: profileError } = await supabaseServer
+      .from("user_profiles")
       .select("role")
-      .eq("id", user.id)
+      .eq("user_id", user.id)
       .single()
 
-    if (profileError || !profile) {
-      return NextResponse.json({ error: "Profile not found" }, { status: 404 })
-    }
-
-    // Only admins and super_admins can create API keys
-    if (!["admin", "super_admin"].includes(profile.role)) {
-      return NextResponse.json({ error: "Insufficient permissions" }, { status: 403 })
+    if (profileError || profile?.role !== "admin") {
+      return NextResponse.json({ error: "Forbidden" }, { status: 403 })
     }
 
     const { name, permissions } = await request.json()
 
-    if (!name || !permissions || !Array.isArray(permissions)) {
+    if (!name || !permissions) {
       return NextResponse.json({ error: "Name and permissions are required" }, { status: 400 })
     }
 
     // Generate a secure API key
-    const apiKey = `sk_live_${Math.random().toString(36).substring(2, 18)}${Math.random().toString(36).substring(2, 18)}`
+    const apiKey = `dk_${crypto.randomBytes(32).toString("hex")}`
+    const keyHash = crypto.createHash("sha256").update(apiKey).digest("hex")
 
-    // Insert the new API key
-    const { data: newApiKey, error: insertError } = await supabase
+    // Insert the API key
+    const { data: newApiKey, error } = await supabaseServer
       .from("api_keys")
       .insert({
+        admin_id: user.id,
         name,
-        key: apiKey,
+        key_hash: keyHash,
         permissions,
-        created_by: user.id,
-        status: "active",
+        is_active: true,
       })
       .select()
       .single()
 
-    if (insertError) {
-      console.error("Error creating API key:", insertError)
-      return NextResponse.json({ error: "Failed to create API key" }, { status: 500 })
+    if (error) {
+      throw error
     }
 
-    return NextResponse.json({ apiKey: newApiKey })
+    // Return the API key with the actual key (only shown once)
+    return NextResponse.json({
+      apiKey: {
+        ...newApiKey,
+        key: apiKey, // Only returned on creation
+      },
+    })
   } catch (error) {
-    console.error("Error in API keys creation route:", error)
+    console.error("Error creating API key:", error)
     return NextResponse.json({ error: "Internal server error" }, { status: 500 })
   }
 }

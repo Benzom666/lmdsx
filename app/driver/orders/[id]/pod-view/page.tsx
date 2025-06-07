@@ -1,83 +1,96 @@
 "use client"
 
 import { useState, useEffect } from "react"
-import { useParams, useRouter } from "next/navigation"
-import { DashboardLayout } from "@/components/dashboard-layout"
+import { useRouter, useParams } from "next/navigation"
+import { DriverDashboardLayout } from "@/components/driver-dashboard-layout"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { useToast } from "@/components/ui/use-toast"
 import { useAuth } from "@/contexts/auth-context"
 import { supabase, type Order } from "@/lib/supabase"
-import { ArrowLeft, Camera, MapPin, Package, CheckCircle, Download, Share } from "lucide-react"
+import {
+  ArrowLeft,
+  Camera,
+  Download,
+  Share,
+  MapPin,
+  User,
+  Phone,
+  Calendar,
+  Package,
+  CheckCircle,
+  ImageIcon,
+  ZoomIn,
+  AlertTriangle,
+} from "lucide-react"
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 
-interface OrderUpdate {
+interface PODPhoto {
   id: string
-  order_id: string
-  driver_id: string
-  status: string
-  notes: string
-  photo_url?: string
-  signature_url?: string
-  latitude?: number
-  longitude?: number
-  delivered_to?: string
-  delivery_time: string
-  created_at: string
+  url: string
+  caption?: string
+  timestamp: string
 }
 
 export default function PODViewPage() {
-  const params = useParams()
-  const router = useRouter()
   const { profile } = useAuth()
   const { toast } = useToast()
-  const [loading, setLoading] = useState(true)
-  const [order, setOrder] = useState<Order | null>(null)
-  const [podData, setPodData] = useState<OrderUpdate | null>(null)
-
+  const router = useRouter()
+  const params = useParams()
   const orderId = params.id as string
 
+  const [order, setOrder] = useState<Order | null>(null)
+  const [photos, setPhotos] = useState<PODPhoto[]>([])
+  const [loading, setLoading] = useState(true)
+  const [selectedPhoto, setSelectedPhoto] = useState<PODPhoto | null>(null)
+  const [photoDialogOpen, setPhotoDialogOpen] = useState(false)
+
   useEffect(() => {
-    if (orderId && profile) {
+    if (profile && orderId) {
       fetchOrderAndPOD()
     }
-  }, [orderId, profile])
+  }, [profile, orderId])
 
   const fetchOrderAndPOD = async () => {
-    if (!profile) return
-
     try {
-      setLoading(true)
-
       // Fetch order details
       const { data: orderData, error: orderError } = await supabase
         .from("orders")
         .select("*")
         .eq("id", orderId)
-        .eq("driver_id", profile.user_id)
+        .eq("driver_id", profile?.user_id)
         .single()
 
       if (orderError) throw orderError
 
-      // Fetch POD data (order update with delivered status)
-      const { data: podData, error: podError } = await supabase
-        .from("order_updates")
-        .select("*")
-        .eq("order_id", orderId)
-        .eq("status", "delivered")
-        .order("created_at", { ascending: false })
-        .limit(1)
-        .single()
+      setOrder(orderData)
 
-      if (podError && podError.code !== "PGRST116") {
-        // PGRST116 is "not found" error
-        throw podError
+      // Parse photo URLs from the order
+      if (orderData.photo_url) {
+        try {
+          const photoUrls = JSON.parse(orderData.photo_url)
+          const podPhotos: PODPhoto[] = photoUrls.map((url: string, index: number) => ({
+            id: `photo_${index}`,
+            url,
+            caption: `Proof of Delivery ${index + 1}`,
+            timestamp: orderData.completed_at || orderData.updated_at,
+          }))
+          setPhotos(podPhotos)
+        } catch (parseError) {
+          // If it's a single URL string, treat it as one photo
+          setPhotos([
+            {
+              id: "photo_1",
+              url: orderData.photo_url,
+              caption: "Proof of Delivery",
+              timestamp: orderData.completed_at || orderData.updated_at,
+            },
+          ])
+        }
       }
-
-      setOrder(orderData as Order)
-      setPodData(podData as OrderUpdate)
     } catch (error) {
-      console.error("Error fetching order and POD data:", error)
+      console.error("Error fetching order and POD:", error)
       toast({
         title: "Error",
         description: "Failed to load proof of delivery. Please try again.",
@@ -88,174 +101,149 @@ export default function PODViewPage() {
     }
   }
 
-  const downloadPOD = async () => {
-    if (!order || !podData) return
-
+  const downloadPhoto = async (photo: PODPhoto) => {
     try {
-      // Create a simple POD report
-      const podReport = {
-        orderNumber: order.order_number,
-        customerName: order.customer_name,
-        deliveryAddress: order.delivery_address,
-        deliveredTo: podData.delivered_to,
-        deliveryTime: new Date(podData.delivery_time).toLocaleString(),
-        driverNotes: podData.notes,
-        location: podData.latitude && podData.longitude ? `${podData.latitude}, ${podData.longitude}` : "Not available",
-        photoUrl: podData.photo_url,
-        signatureUrl: podData.signature_url,
-      }
-
-      const blob = new Blob([JSON.stringify(podReport, null, 2)], { type: "application/json" })
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement("a")
-      a.href = url
-      a.download = `POD-${order.order_number}.json`
-      document.body.appendChild(a)
-      a.click()
-      document.body.removeChild(a)
-      URL.revokeObjectURL(url)
+      const response = await fetch(photo.url)
+      const blob = await response.blob()
+      const url = window.URL.createObjectURL(blob)
+      const link = document.createElement("a")
+      link.href = url
+      link.download = `POD_${order?.order_number}_${photo.id}.jpg`
+      document.body.appendChild(link)
+      link.click()
+      document.body.removeChild(link)
+      window.URL.revokeObjectURL(url)
 
       toast({
         title: "Download Started",
-        description: "POD report has been downloaded.",
+        description: "Photo download has started",
       })
     } catch (error) {
-      console.error("Error downloading POD:", error)
       toast({
-        title: "Error",
-        description: "Failed to download POD report.",
+        title: "Download Failed",
+        description: "Failed to download photo. Please try again.",
         variant: "destructive",
       })
     }
   }
 
-  const sharePOD = async () => {
-    if (!order) return
-
-    try {
-      if (navigator.share) {
+  const sharePhoto = async (photo: PODPhoto) => {
+    if (navigator.share) {
+      try {
         await navigator.share({
-          title: `Proof of Delivery - Order #${order.order_number}`,
-          text: `Delivery completed for ${order.customer_name} at ${order.delivery_address}`,
-          url: window.location.href,
+          title: `Proof of Delivery - ${order?.order_number}`,
+          text: `Delivery completed for order ${order?.order_number}`,
+          url: photo.url,
         })
-      } else {
-        // Fallback: copy to clipboard
-        await navigator.clipboard.writeText(window.location.href)
-        toast({
-          title: "Link Copied",
-          description: "POD link has been copied to clipboard.",
-        })
+      } catch (error) {
+        // User cancelled sharing
       }
-    } catch (error) {
-      console.error("Error sharing POD:", error)
+    } else {
+      // Fallback: copy URL to clipboard
+      navigator.clipboard.writeText(photo.url)
       toast({
-        title: "Error",
-        description: "Failed to share POD.",
-        variant: "destructive",
+        title: "Link Copied",
+        description: "Photo link copied to clipboard",
       })
     }
+  }
+
+  const openPhotoDialog = (photo: PODPhoto) => {
+    setSelectedPhoto(photo)
+    setPhotoDialogOpen(true)
   }
 
   if (loading) {
     return (
-      <DashboardLayout>
-        <div className="text-center py-8">Loading proof of delivery...</div>
-      </DashboardLayout>
+      <DriverDashboardLayout title="Loading...">
+        <div className="flex items-center justify-center py-12">
+          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+        </div>
+      </DriverDashboardLayout>
     )
   }
 
   if (!order) {
     return (
-      <DashboardLayout>
-        <div className="text-center py-8">
-          <p className="text-muted-foreground">Order not found.</p>
-          <Button onClick={() => router.back()} className="mt-4">
+      <DriverDashboardLayout title="Order Not Found">
+        <div className="text-center py-12">
+          <AlertTriangle className="mx-auto h-16 w-16 text-red-500 mb-4" />
+          <h2 className="text-xl font-semibold mb-2">Order Not Found</h2>
+          <p className="text-muted-foreground mb-4">
+            The requested order could not be found or you don't have access to it.
+          </p>
+          <Button onClick={() => router.push("/driver/orders")}>
             <ArrowLeft className="mr-2 h-4 w-4" />
-            Go Back
+            Back to Orders
           </Button>
         </div>
-      </DashboardLayout>
+      </DriverDashboardLayout>
     )
   }
 
   return (
-    <DashboardLayout>
-      <div className="space-y-6 max-w-4xl mx-auto">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-4">
-            <Button variant="outline" size="icon" onClick={() => router.back()}>
-              <ArrowLeft className="h-4 w-4" />
-            </Button>
-            <div>
-              <h1 className="text-2xl font-bold">Proof of Delivery</h1>
-              <p className="text-muted-foreground">Order #{order.order_number}</p>
-            </div>
-          </div>
-          <div className="flex gap-2">
-            <Button variant="outline" onClick={downloadPOD}>
-              <Download className="mr-2 h-4 w-4" />
-              Download
-            </Button>
-            <Button variant="outline" onClick={sharePOD}>
-              <Share className="mr-2 h-4 w-4" />
-              Share
-            </Button>
-          </div>
-        </div>
-
-        {/* Delivery Status */}
-        <Card>
-          <CardContent className="pt-6">
-            <div className="flex items-center justify-center gap-3 text-green-600">
-              <CheckCircle className="h-8 w-8" />
-              <div className="text-center">
-                <h2 className="text-xl font-semibold">Delivery Completed</h2>
-                <p className="text-sm text-muted-foreground">
-                  {podData?.delivery_time ? new Date(podData.delivery_time).toLocaleString() : "Time not recorded"}
-                </p>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* Order Details */}
+    <DriverDashboardLayout
+      title="Proof of Delivery"
+      headerActions={
+        <Button variant="outline" onClick={() => router.back()}>
+          <ArrowLeft className="h-4 w-4 mr-1" />
+          Back
+        </Button>
+      }
+    >
+      <div className="space-y-6">
+        {/* Order Summary */}
         <Card>
           <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <Package className="h-5 w-5" />
-              Order Details
-            </CardTitle>
+            <div className="flex items-center justify-between">
+              <CardTitle className="flex items-center gap-2">
+                <Package className="h-5 w-5" />
+                Order #{order.order_number}
+              </CardTitle>
+              <Badge variant="default" className="bg-green-100 text-green-800">
+                <CheckCircle className="mr-1 h-3 w-3" />
+                Delivered
+              </Badge>
+            </div>
           </CardHeader>
-          <CardContent>
-            <div className="grid md:grid-cols-2 gap-6">
-              <div className="space-y-4">
-                <div>
-                  <p className="text-sm font-medium text-muted-foreground">Customer</p>
-                  <p className="font-medium">{order.customer_name}</p>
+          <CardContent className="space-y-4">
+            {/* Customer Information */}
+            <div className="grid md:grid-cols-2 gap-4">
+              <div className="space-y-3">
+                <div className="flex items-center gap-2">
+                  <User className="h-4 w-4 text-muted-foreground" />
+                  <div>
+                    <p className="font-medium">{order.customer_name}</p>
+                    {order.customer_phone && <p className="text-sm text-muted-foreground">{order.customer_phone}</p>}
+                  </div>
                 </div>
-                <div>
-                  <p className="text-sm font-medium text-muted-foreground">Order Number</p>
-                  <p className="font-medium">#{order.order_number}</p>
-                </div>
-                <div>
-                  <p className="text-sm font-medium text-muted-foreground">Priority</p>
-                  <Badge variant={order.priority === "urgent" ? "destructive" : "outline"}>{order.priority}</Badge>
+
+                <div className="flex items-start gap-2">
+                  <MapPin className="h-4 w-4 text-muted-foreground mt-0.5" />
+                  <div>
+                    <p className="text-sm font-medium">Delivery Address</p>
+                    <p className="text-sm text-muted-foreground">{order.delivery_address}</p>
+                  </div>
                 </div>
               </div>
-              <div className="space-y-4">
-                <div>
-                  <p className="text-sm font-medium text-muted-foreground">Delivery Address</p>
-                  <p className="font-medium">{order.delivery_address}</p>
+
+              <div className="space-y-3">
+                <div className="flex items-center gap-2">
+                  <Calendar className="h-4 w-4 text-muted-foreground" />
+                  <div>
+                    <p className="text-sm font-medium">Completed</p>
+                    <p className="text-sm text-muted-foreground">
+                      {order.completed_at
+                        ? new Date(order.completed_at).toLocaleString()
+                        : new Date(order.updated_at).toLocaleString()}
+                    </p>
+                  </div>
                 </div>
-                <div>
-                  <p className="text-sm font-medium text-muted-foreground">Order Created</p>
-                  <p className="font-medium">{new Date(order.created_at).toLocaleString()}</p>
-                </div>
+
                 {order.delivery_notes && (
                   <div>
-                    <p className="text-sm font-medium text-muted-foreground">Special Instructions</p>
-                    <p className="font-medium">{order.delivery_notes}</p>
+                    <p className="text-sm font-medium mb-1">Delivery Notes</p>
+                    <p className="text-sm text-muted-foreground bg-gray-50 p-2 rounded">{order.delivery_notes}</p>
                   </div>
                 )}
               </div>
@@ -263,166 +251,177 @@ export default function PODViewPage() {
           </CardContent>
         </Card>
 
-        {/* POD Evidence */}
-        {podData && (
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <Camera className="h-5 w-5" />
-                Proof of Delivery Evidence
-              </CardTitle>
-              <CardDescription>Documentation provided at the time of delivery</CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-6">
-              {/* Delivery Confirmation */}
-              <div className="grid md:grid-cols-2 gap-4">
-                <div>
-                  <p className="text-sm font-medium text-muted-foreground">Delivered To</p>
-                  <p className="font-medium">{podData.delivered_to || "Not specified"}</p>
-                </div>
-                <div>
-                  <p className="text-sm font-medium text-muted-foreground">Delivery Time</p>
-                  <p className="font-medium">{new Date(podData.delivery_time).toLocaleString()}</p>
-                </div>
-              </div>
-
-              {/* Photo Evidence */}
-              {podData.photo_url && (
-                <div>
-                  <p className="text-sm font-medium text-muted-foreground mb-2">Photo Evidence</p>
-                  {(() => {
-                    try {
-                      // Try to parse as JSON array first
-                      const photoArray = JSON.parse(podData.photo_url)
-                      if (Array.isArray(photoArray) && photoArray.length > 0) {
-                        return (
-                          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                            {photoArray.map((photoUrl, index) => (
-                              <div key={index} className="border rounded-lg overflow-hidden bg-gray-50">
-                                <img
-                                  src={photoUrl || "/placeholder.svg"}
-                                  alt={`Delivery proof photo ${index + 1}`}
-                                  className="w-full h-48 object-cover"
-                                  onError={(e) => {
-                                    console.error(`Failed to load photo ${index + 1}:`, photoUrl)
-                                    e.currentTarget.src =
-                                      "/placeholder.svg?height=192&width=300&text=Photo+Not+Available"
-                                    e.currentTarget.className = "w-full h-48 object-contain bg-gray-100 p-4"
-                                  }}
-                                  onLoad={() => console.log(`Photo ${index + 1} loaded successfully:`, photoUrl)}
-                                />
-                                <div className="p-2 bg-white">
-                                  <p className="text-xs text-gray-600">
-                                    Photo {index + 1} of {photoArray.length}
-                                  </p>
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        )
-                      }
-                    } catch (error) {
-                      console.log("Photo URL is not JSON, treating as single URL:", podData.photo_url)
-                    }
-
-                    // Fallback for single photo URL
-                    return (
-                      <div className="border rounded-lg overflow-hidden bg-gray-50">
-                        <img
-                          src={podData.photo_url || "/placeholder.svg"}
-                          alt="Delivery proof photo"
-                          className="w-full max-h-64 object-cover"
-                          onError={(e) => {
-                            console.error("Failed to load image:", podData.photo_url)
-                            e.currentTarget.src = "/placeholder.svg?height=256&width=400&text=Photo+Not+Available"
-                            e.currentTarget.className = "w-full max-h-64 object-contain bg-gray-100 p-4"
-                          }}
-                          onLoad={() => console.log("Photo loaded successfully:", podData.photo_url)}
-                        />
-                      </div>
-                    )
-                  })()}
-                </div>
-              )}
-
-              {/* Show message if photo_url exists but is empty/null */}
-              {podData && !podData.photo_url && (
-                <div>
-                  <p className="text-sm font-medium text-muted-foreground mb-2">Photo Evidence</p>
-                  <div className="border rounded-lg p-4 bg-yellow-50 text-center">
-                    <Camera className="mx-auto h-8 w-8 text-yellow-600 mb-2" />
-                    <p className="text-sm text-yellow-800">No photos were captured for this delivery</p>
-                  </div>
-                </div>
-              )}
-
-              {/* Signature Evidence */}
-              {podData.signature_url && (
-                <div>
-                  <p className="text-sm font-medium text-muted-foreground mb-2">Digital Signature</p>
-                  <div className="border rounded-lg overflow-hidden bg-white">
-                    <img
-                      src={podData.signature_url || "/placeholder.svg"}
-                      alt="Customer signature"
-                      className="w-full max-h-32 object-contain"
-                    />
-                  </div>
-                </div>
-              )}
-
-              {/* Delivery Notes */}
-              {podData.notes && (
-                <div>
-                  <p className="text-sm font-medium text-muted-foreground mb-2">Delivery Notes</p>
-                  <div className="p-3 bg-gray-50 rounded-lg">
-                    <p className="text-sm">{podData.notes}</p>
-                  </div>
-                </div>
-              )}
-
-              {/* Location Data */}
-              {podData.latitude && podData.longitude && (
-                <div>
-                  <p className="text-sm font-medium text-muted-foreground mb-2">Delivery Location</p>
-                  <div className="flex items-center gap-2 p-3 bg-green-50 rounded-lg">
-                    <MapPin className="h-4 w-4 text-green-600" />
-                    <div>
-                      <p className="text-sm font-medium text-green-800">GPS Coordinates Captured</p>
-                      <p className="text-xs text-green-600">
-                        {podData.latitude.toFixed(6)}, {podData.longitude.toFixed(6)}
-                      </p>
-                    </div>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() =>
-                        window.open(`https://www.google.com/maps?q=${podData.latitude},${podData.longitude}`, "_blank")
-                      }
-                    >
-                      View on Map
-                    </Button>
-                  </div>
-                </div>
-              )}
-            </CardContent>
-          </Card>
-        )}
-
-        {/* No POD Data */}
-        {!podData && (
-          <Card>
-            <CardContent className="pt-6">
+        {/* Proof of Delivery Photos */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Camera className="h-5 w-5" />
+              Proof of Delivery Photos ({photos.length})
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            {photos.length === 0 ? (
               <div className="text-center py-8">
-                <Camera className="mx-auto h-12 w-12 text-muted-foreground mb-4" />
-                <h3 className="text-lg font-medium mb-2">No Proof of Delivery Found</h3>
-                <p className="text-muted-foreground">
-                  This order shows as delivered but no proof of delivery documentation was found.
-                </p>
+                <ImageIcon className="mx-auto h-12 w-12 text-muted-foreground mb-4" />
+                <h3 className="text-lg font-medium mb-2">No Photos Available</h3>
+                <p className="text-muted-foreground">No proof of delivery photos were captured for this order.</p>
               </div>
-            </CardContent>
-          </Card>
-        )}
+            ) : (
+              <div className="space-y-4">
+                {/* Photo Grid */}
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                  {photos.map((photo) => (
+                    <div key={photo.id} className="relative group">
+                      <div
+                        className="aspect-square bg-gray-100 rounded-lg overflow-hidden cursor-pointer hover:opacity-90 transition-opacity"
+                        onClick={() => openPhotoDialog(photo)}
+                      >
+                        <img
+                          src={photo.url || "/placeholder.svg"}
+                          alt={photo.caption || "Proof of delivery"}
+                          className="w-full h-full object-cover"
+                          onError={(e) => {
+                            const target = e.target as HTMLImageElement
+                            target.src = "/placeholder.svg?height=300&width=300&text=Image+Not+Found"
+                          }}
+                        />
+                        <div className="absolute inset-0 bg-black bg-opacity-0 group-hover:bg-opacity-20 transition-all duration-200 flex items-center justify-center">
+                          <ZoomIn className="h-8 w-8 text-white opacity-0 group-hover:opacity-100 transition-opacity" />
+                        </div>
+                      </div>
+
+                      {/* Photo Actions */}
+                      <div className="absolute top-2 right-2 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          className="h-8 w-8 p-0"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            downloadPhoto(photo)
+                          }}
+                        >
+                          <Download className="h-4 w-4" />
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          className="h-8 w-8 p-0"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            sharePhoto(photo)
+                          }}
+                        >
+                          <Share className="h-4 w-4" />
+                        </Button>
+                      </div>
+
+                      {/* Photo Caption */}
+                      <div className="mt-2">
+                        <p className="text-sm font-medium">{photo.caption}</p>
+                        <p className="text-xs text-muted-foreground">{new Date(photo.timestamp).toLocaleString()}</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Bulk Actions */}
+                <div className="flex flex-wrap gap-2 pt-4 border-t">
+                  <Button
+                    variant="outline"
+                    onClick={() => {
+                      photos.forEach((photo) => downloadPhoto(photo))
+                    }}
+                  >
+                    <Download className="mr-2 h-4 w-4" />
+                    Download All Photos
+                  </Button>
+                  <Button
+                    variant="outline"
+                    onClick={() => {
+                      if (photos.length > 0) {
+                        sharePhoto(photos[0])
+                      }
+                    }}
+                  >
+                    <Share className="mr-2 h-4 w-4" />
+                    Share Delivery Proof
+                  </Button>
+                </div>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
+        {/* Additional Actions */}
+        <Card>
+          <CardHeader>
+            <CardTitle>Additional Actions</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="flex flex-wrap gap-3">
+              <Button variant="outline" onClick={() => router.push(`/driver/orders/${orderId}`)}>
+                View Full Order Details
+              </Button>
+              <Button variant="outline" onClick={() => router.push("/driver/deliveries")}>
+                View All Deliveries
+              </Button>
+              <Button
+                variant="outline"
+                onClick={() =>
+                  window.open(
+                    `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(order.delivery_address)}`,
+                  )
+                }
+              >
+                <MapPin className="mr-2 h-4 w-4" />
+                View on Map
+              </Button>
+              {order.customer_phone && (
+                <Button variant="outline" onClick={() => window.open(`tel:${order.customer_phone}`)}>
+                  <Phone className="mr-2 h-4 w-4" />
+                  Call Customer
+                </Button>
+              )}
+            </div>
+          </CardContent>
+        </Card>
       </div>
-    </DashboardLayout>
+
+      {/* Photo Viewer Dialog */}
+      <Dialog open={photoDialogOpen} onOpenChange={setPhotoDialogOpen}>
+        <DialogContent className="max-w-4xl max-h-[90vh] p-0">
+          <DialogHeader className="p-6 pb-0">
+            <DialogTitle className="flex items-center justify-between">
+              <span>{selectedPhoto?.caption}</span>
+              <div className="flex gap-2">
+                <Button variant="outline" size="sm" onClick={() => selectedPhoto && downloadPhoto(selectedPhoto)}>
+                  <Download className="h-4 w-4" />
+                </Button>
+                <Button variant="outline" size="sm" onClick={() => selectedPhoto && sharePhoto(selectedPhoto)}>
+                  <Share className="h-4 w-4" />
+                </Button>
+              </div>
+            </DialogTitle>
+            <DialogDescription>{selectedPhoto && new Date(selectedPhoto.timestamp).toLocaleString()}</DialogDescription>
+          </DialogHeader>
+          <div className="p-6 pt-0">
+            {selectedPhoto && (
+              <div className="relative">
+                <img
+                  src={selectedPhoto.url || "/placeholder.svg"}
+                  alt={selectedPhoto.caption || "Proof of delivery"}
+                  className="w-full h-auto max-h-[60vh] object-contain rounded-lg"
+                  onError={(e) => {
+                    const target = e.target as HTMLImageElement
+                    target.src = "/placeholder.svg?height=400&width=600&text=Image+Not+Found"
+                  }}
+                />
+              </div>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
+    </DriverDashboardLayout>
   )
 }

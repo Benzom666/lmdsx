@@ -1,104 +1,88 @@
 import { type NextRequest, NextResponse } from "next/server"
-import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs"
-import { cookies } from "next/headers"
+import { createServerSupabaseClient } from "@/lib/supabase"
 
 export async function DELETE(request: NextRequest, { params }: { params: { id: string } }) {
   try {
-    const supabase = createRouteHandlerClient({ cookies })
+    const supabaseServer = createServerSupabaseClient()
 
     // Get the current user
     const {
       data: { user },
-      error: userError,
-    } = await supabase.auth.getUser()
+      error: authError,
+    } = await supabaseServer.auth.getUser()
 
-    if (userError || !user) {
+    if (authError || !user) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
     }
 
     // Get user profile to check role
-    const { data: profile, error: profileError } = await supabase
-      .from("profiles")
+    const { data: profile, error: profileError } = await supabaseServer
+      .from("user_profiles")
       .select("role")
-      .eq("id", user.id)
+      .eq("user_id", user.id)
       .single()
 
-    if (profileError || !profile) {
-      return NextResponse.json({ error: "Profile not found" }, { status: 404 })
+    if (profileError || profile?.role !== "admin") {
+      return NextResponse.json({ error: "Forbidden" }, { status: 403 })
     }
 
-    // Only admins and super_admins can delete API keys
-    if (!["admin", "super_admin"].includes(profile.role)) {
-      return NextResponse.json({ error: "Insufficient permissions" }, { status: 403 })
-    }
+    // Delete the API key (only if it belongs to this admin)
+    const { error } = await supabaseServer.from("api_keys").delete().eq("id", params.id).eq("admin_id", user.id)
 
-    // Delete the API key
-    const { error: deleteError } = await supabase.from("api_keys").delete().eq("id", params.id)
-
-    if (deleteError) {
-      console.error("Error deleting API key:", deleteError)
-      return NextResponse.json({ error: "Failed to delete API key" }, { status: 500 })
+    if (error) {
+      throw error
     }
 
     return NextResponse.json({ success: true })
   } catch (error) {
-    console.error("Error in API key deletion route:", error)
+    console.error("Error deleting API key:", error)
     return NextResponse.json({ error: "Internal server error" }, { status: 500 })
   }
 }
 
 export async function PUT(request: NextRequest, { params }: { params: { id: string } }) {
   try {
-    const supabase = createRouteHandlerClient({ cookies })
+    const supabaseServer = createServerSupabaseClient()
 
     // Get the current user
     const {
       data: { user },
-      error: userError,
-    } = await supabase.auth.getUser()
+      error: authError,
+    } = await supabaseServer.auth.getUser()
 
-    if (userError || !user) {
+    if (authError || !user) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
     }
 
     // Get user profile to check role
-    const { data: profile, error: profileError } = await supabase
-      .from("profiles")
+    const { data: profile, error: profileError } = await supabaseServer
+      .from("user_profiles")
       .select("role")
-      .eq("id", user.id)
+      .eq("user_id", user.id)
       .single()
 
-    if (profileError || !profile) {
-      return NextResponse.json({ error: "Profile not found" }, { status: 404 })
+    if (profileError || profile?.role !== "admin") {
+      return NextResponse.json({ error: "Forbidden" }, { status: 403 })
     }
 
-    // Only admins and super_admins can update API keys
-    if (!["admin", "super_admin"].includes(profile.role)) {
-      return NextResponse.json({ error: "Insufficient permissions" }, { status: 403 })
-    }
+    const { is_active } = await request.json()
 
-    const { status, permissions } = await request.json()
-
-    // Update the API key
-    const { data: updatedApiKey, error: updateError } = await supabase
+    // Update the API key status
+    const { data: updatedKey, error } = await supabaseServer
       .from("api_keys")
-      .update({
-        status,
-        permissions,
-        updated_at: new Date().toISOString(),
-      })
+      .update({ is_active })
       .eq("id", params.id)
+      .eq("admin_id", user.id)
       .select()
       .single()
 
-    if (updateError) {
-      console.error("Error updating API key:", updateError)
-      return NextResponse.json({ error: "Failed to update API key" }, { status: 500 })
+    if (error) {
+      throw error
     }
 
-    return NextResponse.json({ apiKey: updatedApiKey })
+    return NextResponse.json({ apiKey: updatedKey })
   } catch (error) {
-    console.error("Error in API key update route:", error)
+    console.error("Error updating API key:", error)
     return NextResponse.json({ error: "Internal server error" }, { status: 500 })
   }
 }
