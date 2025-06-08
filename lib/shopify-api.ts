@@ -2,12 +2,15 @@ interface ShopifyApiConfig {
   maxRetries: number
   retryDelay: number
   timeout: number
+  method?: string
+  body?: string
 }
 
 const defaultConfig: ShopifyApiConfig = {
   maxRetries: 3,
   retryDelay: 1000, // 1 second
   timeout: 30000, // 30 seconds
+  method: "GET",
 }
 
 export class ShopifyApiError extends Error {
@@ -30,13 +33,13 @@ export async function makeShopifyRequest(
 
   for (let attempt = 1; attempt <= config.maxRetries; attempt++) {
     try {
-      console.log(`🌐 Shopify API attempt ${attempt}/${config.maxRetries}: ${url}`)
+      console.log(`🌐 Shopify API attempt ${attempt}/${config.maxRetries}: ${config.method} ${url}`)
 
       const controller = new AbortController()
       const timeoutId = setTimeout(() => controller.abort(), config.timeout)
 
-      const response = await fetch(url, {
-        method: "GET",
+      const fetchOptions: RequestInit = {
+        method: config.method,
         headers: {
           "X-Shopify-Access-Token": accessToken,
           "Content-Type": "application/json",
@@ -44,7 +47,13 @@ export async function makeShopifyRequest(
           Accept: "application/json",
         },
         signal: controller.signal,
-      })
+      }
+
+      if (config.body && config.method !== "GET") {
+        fetchOptions.body = config.body
+      }
+
+      const response = await fetch(url, fetchOptions)
 
       clearTimeout(timeoutId)
 
