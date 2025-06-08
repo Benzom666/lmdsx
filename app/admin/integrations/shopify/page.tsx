@@ -43,6 +43,9 @@ import {
   BookOpen,
   Play,
   Trash2,
+  Truck,
+  Clock,
+  CheckCircle2,
 } from "lucide-react"
 
 import { supabase } from "@/lib/supabase"
@@ -76,9 +79,23 @@ interface ShopifyOrder {
   line_items: any[]
   total_price: string
   fulfillment_status: string
+  actual_fulfillment_status: string
   financial_status: string
   created_at: string
   synced_at: string
+  delivery_status: string | null
+  delivery_completed_at: string | null
+  has_delivery_order: boolean
+  sync_status: string
+  shopify_connections: Array<{ shop_domain: string; is_active: boolean }>
+  orders: Array<{
+    id: string
+    order_number: string
+    status: string
+    completed_at: string | null
+    shopify_fulfillment_id: string | null
+    shopify_fulfilled_at: string | null
+  }>
 }
 
 export default function ShopifyIntegrationPage() {
@@ -279,19 +296,32 @@ export default function ShopifyIntegrationPage() {
 
       if (response.ok) {
         const data = await response.json()
+
+        // Show detailed success message
+        const successMessage =
+          data.delivery_orders_created > 0
+            ? `Successfully synced ${data.synced_count || 0} orders and created ${data.delivery_orders_created} delivery orders`
+            : `Successfully synced ${data.synced_count || 0} orders from Shopify`
+
         toast({
           title: "Orders Synced Successfully",
-          description: data.message || `Successfully synced ${data.synced_count || 0} orders from Shopify`,
+          description: successMessage,
         })
 
         // Refresh the connections and orders
         await fetchConnections()
         await fetchRecentOrders()
+
+        // Navigate to orders page to show the synced orders
+        if (data.delivery_orders_created > 0) {
+          setTimeout(() => {
+            window.location.href = "/admin/orders"
+          }, 2000)
+        }
       } else {
         const error = await response.json()
         console.error("Sync error response:", error)
 
-        // Provide more specific error messages
         let errorMessage = "Failed to sync orders from Shopify"
         if (error.error) {
           errorMessage = error.error
@@ -380,6 +410,75 @@ export default function ShopifyIntegrationPage() {
       return `${window.location.origin}/api/webhooks/shopify`
     }
     return ""
+  }
+
+  const getFulfillmentStatusBadge = (order: ShopifyOrder) => {
+    const status = order.actual_fulfillment_status || order.fulfillment_status
+
+    switch (status) {
+      case "fulfilled":
+        return (
+          <Badge variant="default" className="bg-green-500">
+            <CheckCircle2 className="w-3 h-3 mr-1" />
+            Fulfilled
+          </Badge>
+        )
+      case "pending_fulfillment":
+        return (
+          <Badge variant="secondary" className="bg-yellow-500">
+            <Clock className="w-3 h-3 mr-1" />
+            Pending Fulfillment
+          </Badge>
+        )
+      case "unfulfilled":
+        return (
+          <Badge variant="outline">
+            <Package className="w-3 h-3 mr-1" />
+            Unfulfilled
+          </Badge>
+        )
+      default:
+        return <Badge variant="outline">{status}</Badge>
+    }
+  }
+
+  const getDeliveryStatusBadge = (order: ShopifyOrder) => {
+    if (!order.has_delivery_order) {
+      return <Badge variant="outline">No Delivery Order</Badge>
+    }
+
+    switch (order.delivery_status) {
+      case "delivered":
+        return (
+          <Badge variant="default" className="bg-green-500">
+            <Truck className="w-3 h-3 mr-1" />
+            Delivered
+          </Badge>
+        )
+      case "in_transit":
+        return (
+          <Badge variant="secondary" className="bg-blue-500">
+            <Truck className="w-3 h-3 mr-1" />
+            In Transit
+          </Badge>
+        )
+      case "assigned":
+        return (
+          <Badge variant="secondary">
+            <Truck className="w-3 h-3 mr-1" />
+            Assigned
+          </Badge>
+        )
+      case "pending":
+        return (
+          <Badge variant="outline">
+            <Clock className="w-3 h-3 mr-1" />
+            Pending
+          </Badge>
+        )
+      default:
+        return <Badge variant="outline">{order.delivery_status}</Badge>
+    }
   }
 
   return (
@@ -678,7 +777,9 @@ export default function ShopifyIntegrationPage() {
           <Card>
             <CardHeader>
               <CardTitle>Recent Shopify Orders</CardTitle>
-              <CardDescription>Orders synchronized from your connected Shopify stores</CardDescription>
+              <CardDescription>
+                Orders synchronized from your connected Shopify stores with real-time fulfillment status
+              </CardDescription>
             </CardHeader>
             <CardContent>
               {recentOrders.length === 0 ? (
@@ -693,7 +794,7 @@ export default function ShopifyIntegrationPage() {
                 <div className="space-y-4">
                   {recentOrders.map((order) => (
                     <div key={order.id} className="border rounded-lg p-4">
-                      <div className="flex items-center justify-between mb-2">
+                      <div className="flex items-center justify-between mb-3">
                         <div className="flex items-center gap-3">
                           <Package className="h-5 w-5" />
                           <div>
@@ -703,10 +804,11 @@ export default function ShopifyIntegrationPage() {
                         </div>
                         <div className="text-right">
                           <p className="font-medium">${order.total_price}</p>
-                          <Badge variant="outline">{order.fulfillment_status}</Badge>
+                          <div className="flex gap-2 mt-1">{getFulfillmentStatusBadge(order)}</div>
                         </div>
                       </div>
-                      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+
+                      <div className="grid grid-cols-2 md:grid-cols-5 gap-4 text-sm">
                         <div>
                           <p className="font-medium">Customer</p>
                           <p className="text-muted-foreground">{order.customer_email}</p>
@@ -716,14 +818,29 @@ export default function ShopifyIntegrationPage() {
                           <p className="text-muted-foreground">{order.customer_phone || "N/A"}</p>
                         </div>
                         <div>
+                          <p className="font-medium">Delivery Status</p>
+                          {getDeliveryStatusBadge(order)}
+                        </div>
+                        <div>
                           <p className="font-medium">Created</p>
                           <p className="text-muted-foreground">{new Date(order.created_at).toLocaleDateString()}</p>
                         </div>
                         <div>
-                          <p className="font-medium">Synced</p>
-                          <p className="text-muted-foreground">{new Date(order.synced_at).toLocaleDateString()}</p>
+                          <p className="font-medium">Sync Status</p>
+                          <Badge variant={order.sync_status === "synced" ? "default" : "secondary"}>
+                            {order.sync_status === "synced" ? "Synced" : "Pending"}
+                          </Badge>
                         </div>
                       </div>
+
+                      {order.delivery_completed_at && (
+                        <div className="mt-3 p-2 bg-green-50 rounded border border-green-200">
+                          <p className="text-sm text-green-800">
+                            <CheckCircle2 className="w-4 h-4 inline mr-1" />
+                            Delivered on {new Date(order.delivery_completed_at).toLocaleString()}
+                          </p>
+                        </div>
+                      )}
                     </div>
                   ))}
                 </div>
@@ -737,7 +854,9 @@ export default function ShopifyIntegrationPage() {
           <Card>
             <CardHeader>
               <CardTitle>Shopify Integration Setup Guide</CardTitle>
-              <CardDescription>Follow these steps to connect your Shopify store</CardDescription>
+              <CardDescription>
+                Follow these steps to connect your Shopify store with automatic fulfillment sync
+              </CardDescription>
             </CardHeader>
             <CardContent className="space-y-6">
               <div className="space-y-4">
@@ -811,6 +930,25 @@ export default function ShopifyIntegrationPage() {
                     </p>
                   </div>
                 </div>
+
+                <div className="flex gap-4">
+                  <div className="flex-shrink-0 w-8 h-8 bg-green-500 text-white rounded-full flex items-center justify-center text-sm font-medium">
+                    ✓
+                  </div>
+                  <div className="space-y-2">
+                    <h3 className="font-medium">Automatic Fulfillment Sync</h3>
+                    <p className="text-sm text-muted-foreground">
+                      Once connected, orders marked as "delivered" in DeliveryOS will automatically update the Shopify
+                      fulfillment status to "fulfilled"
+                    </p>
+                    <div className="bg-green-50 p-3 rounded-lg border border-green-200">
+                      <p className="text-sm text-green-800">
+                        <CheckCircle2 className="w-4 h-4 inline mr-1" />
+                        Real-time synchronization ensures your Shopify admin always shows the latest delivery status
+                      </p>
+                    </div>
+                  </div>
+                </div>
               </div>
 
               <div className="border-t pt-6">
@@ -831,6 +969,15 @@ export default function ShopifyIntegrationPage() {
                       <p className="text-sm font-medium">Orders Not Syncing</p>
                       <p className="text-sm text-muted-foreground">
                         Ensure webhooks are properly configured or manually sync orders from the connections tab
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex gap-3">
+                    <AlertTriangle className="h-5 w-5 text-yellow-500 flex-shrink-0 mt-0.5" />
+                    <div>
+                      <p className="text-sm font-medium">Fulfillment Not Updating</p>
+                      <p className="text-sm text-muted-foreground">
+                        Verify that your Shopify app has "Fulfillments: Read and write" permissions enabled
                       </p>
                     </div>
                   </div>
@@ -894,6 +1041,20 @@ export default function ShopifyIntegrationPage() {
                     <p className="text-xs text-muted-foreground">
                       The webhook secret is used to verify that requests are coming from Shopify and have not been
                       tampered with.
+                    </p>
+                  </div>
+                </div>
+
+                <div>
+                  <Label className="text-sm font-medium">Fulfillment Sync</Label>
+                  <div className="bg-blue-50 p-4 rounded-lg mt-2 border border-blue-200">
+                    <p className="text-sm mb-2 text-blue-800">
+                      <CheckCircle2 className="w-4 h-4 inline mr-1" />
+                      Automatic fulfillment synchronization is enabled for all connected stores.
+                    </p>
+                    <p className="text-xs text-blue-700">
+                      When orders are marked as "delivered" in DeliveryOS, the corresponding Shopify orders will
+                      automatically be marked as "fulfilled" with tracking information.
                     </p>
                   </div>
                 </div>

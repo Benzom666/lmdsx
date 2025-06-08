@@ -175,19 +175,28 @@ export default function AdminOrdersPage() {
 
     setLoading(true)
     try {
-      // Fetch orders with Shopify connection info
+      // Fetch orders without trying to join with shopify_connections
       const { data: ordersData, error: ordersError } = await supabase
         .from("orders")
-        .select(`
-          *,
-          shopify_connections!shopify_connection_id (
-            shop_domain
-          )
-        `)
+        .select("*")
         .eq("created_by", profile.user_id)
         .order("created_at", { ascending: false })
 
       if (ordersError) throw ordersError
+
+      // Fetch shopify connections to get shop domains
+      const { data: connectionsData, error: connectionsError } = await supabase
+        .from("shopify_connections")
+        .select("id, shop_domain")
+        .eq("admin_id", profile.user_id)
+
+      if (connectionsError) throw connectionsError
+
+      // Create a map of connection_id to shop_domain
+      const connectionMap = new Map()
+      connectionsData?.forEach((connection) => {
+        connectionMap.set(connection.id, connection.shop_domain)
+      })
 
       // Fetch driver information
       const { data: driversData, error: driversError } = await supabase
@@ -204,13 +213,17 @@ export default function AdminOrdersPage() {
       })
 
       // Combine orders with driver names and Shopify info
-      const ordersWithDetails = (ordersData || []).map((order: any) => ({
-        ...order,
-        driver_name: order.driver_id ? driverMap.get(order.driver_id) || "Unknown Driver" : "Unassigned",
-        shop_domain: order.shopify_connections?.shop_domain || null,
-        is_shopify_order: !!order.shopify_order_id,
-        shopify_order_number: order.shopify_order_id ? `#${order.shopify_order_id}` : null,
-      }))
+      const ordersWithDetails = (ordersData || []).map((order: any) => {
+        const shopDomain = connectionMap.get(order.shopify_connection_id) || null
+
+        return {
+          ...order,
+          driver_name: order.driver_id ? driverMap.get(order.driver_id) || "Unknown Driver" : "Unassigned",
+          shop_domain: shopDomain,
+          is_shopify_order: !!order.shopify_order_id,
+          shopify_order_number: order.shopify_order_id ? `#${order.shopify_order_id}` : null,
+        }
+      })
 
       console.log(
         `📦 Loaded ${ordersWithDetails.length} orders (${ordersWithDetails.filter((o) => o.is_shopify_order).length} from Shopify)`,
@@ -616,8 +629,6 @@ export default function AdminOrdersPage() {
         return filteredOrders.filter((order) => order.status === "delivered")
       case "failed":
         return filteredOrders.filter((order) => order.status === "failed")
-      case "shopify":
-        return filteredOrders.filter((order) => order.is_shopify_order)
       default:
         return filteredOrders
     }
@@ -935,7 +946,7 @@ export default function AdminOrdersPage() {
 
         {/* Orders Tabs */}
         <Tabs value={activeTab} onValueChange={setActiveTab}>
-          <TabsList className="grid w-full grid-cols-5">
+          <TabsList className="grid w-full grid-cols-4">
             <TabsTrigger value="all" className="flex items-center gap-2">
               <Package className="h-4 w-4" />
               All ({getTabCount("all")})
@@ -951,10 +962,6 @@ export default function AdminOrdersPage() {
             <TabsTrigger value="failed" className="flex items-center gap-2">
               <AlertTriangle className="h-4 w-4" />
               Failed ({getTabCount("failed")})
-            </TabsTrigger>
-            <TabsTrigger value="shopify" className="flex items-center gap-2">
-              <Store className="h-4 w-4" />
-              Shopify ({getTabCount("shopify")})
             </TabsTrigger>
           </TabsList>
 
@@ -1015,24 +1022,6 @@ export default function AdminOrdersPage() {
           <TabsContent value="failed" className="mt-6">
             <OrdersList
               orders={getOrdersByTab("failed")}
-              loading={loading}
-              selectedOrders={selectedOrders}
-              onSelectAll={handleSelectAll}
-              onSelectOrder={handleSelectOrder}
-              allSelected={allSelected}
-              someSelected={someSelected}
-              getStatusBadge={getStatusBadge}
-              getPriorityBadge={getPriorityBadge}
-              getStoreBadge={getStoreBadge}
-              onBulkAssignDriver={handleBulkAssignDriver}
-              onBulkDelete={handleBulkDelete}
-              router={router}
-            />
-          </TabsContent>
-
-          <TabsContent value="shopify" className="mt-6">
-            <OrdersList
-              orders={getOrdersByTab("shopify")}
               loading={loading}
               selectedOrders={selectedOrders}
               onSelectAll={handleSelectAll}

@@ -27,6 +27,7 @@ import {
   FileText,
   Camera,
 } from "lucide-react"
+import { StatusChangeFeedback } from "@/components/status-change-feedback"
 
 // Mock live tracking component - in real app, integrate with Google Maps or similar
 const LiveTrackingMap = ({ order, driver }: { order: Order; driver: UserProfile | null }) => {
@@ -354,6 +355,7 @@ export default function OrderDetailPage() {
             <TabsTrigger value="details">Delivery Details</TabsTrigger>
             <TabsTrigger value="tracking">Live Tracking</TabsTrigger>
             <TabsTrigger value="updates">Order Updates</TabsTrigger>
+            <TabsTrigger value="status">Status Management</TabsTrigger>
           </TabsList>
 
           <TabsContent value="details" className="mt-4">
@@ -508,6 +510,15 @@ export default function OrderDetailPage() {
                 )}
               </CardContent>
             </Card>
+          </TabsContent>
+          <TabsContent value="status" className="mt-4">
+            <StatusChangeFeedback
+              orderId={order.id}
+              currentStatus={order.status}
+              orderNumber={order.order_number}
+              hasShopifyConnection={!!order.shopify_order_id}
+              onStatusChanged={fetchOrderDetails}
+            />
           </TabsContent>
         </Tabs>
       </div>

@@ -147,9 +147,16 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
         errorDetails = shopifyError.message
 
         // Check for specific error types
-        if (shopifyError.message.includes("Failed to fetch")) {
+        if (shopifyError.message.includes("Failed to fetch") || shopifyError.message.includes("fetch failed")) {
           errorMessage = "Network error connecting to Shopify"
-          errorDetails = "Unable to connect to Shopify API. Please check your internet connection and try again."
+          errorDetails =
+            "Unable to connect to Shopify API. This could be due to network connectivity issues, firewall restrictions, or Shopify API being temporarily unavailable. Please check your internet connection and try again."
+        } else if (shopifyError.message.includes("NETWORK_ERROR")) {
+          errorMessage = "Network connectivity issue"
+          errorDetails = "Cannot reach Shopify servers. Please check your network connection and try again."
+        } else if (shopifyError.message.includes("TIMEOUT")) {
+          errorMessage = "Request timeout"
+          errorDetails = "The request to Shopify API timed out. Please try again."
         } else if (shopifyError.message.includes("401")) {
           errorMessage = "Invalid Shopify credentials"
           errorDetails = "Your Shopify access token is invalid or has expired. Please check your connection settings."
@@ -169,6 +176,15 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
         {
           error: errorMessage,
           details: errorDetails,
+          troubleshooting: {
+            steps: [
+              "Verify your internet connection is working",
+              "Check that your Shopify store domain is correct",
+              "Ensure your access token is valid and starts with 'shpat_'",
+              "Verify your Shopify app has the required permissions",
+              "Try again in a few minutes if this is a temporary issue",
+            ],
+          },
         },
         { status: 500 },
       )
@@ -188,6 +204,7 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
 
     let syncedCount = 0
     let errorCount = 0
+    let deliveryOrdersCreated = 0
 
     console.log(`🔄 Processing ${orders.length} orders...`)
 
@@ -199,7 +216,7 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
           "check_shopify_order_exists",
           {
             p_shopify_order_id: order.id.toString(),
-            p_connection_id: id, // shopify_connection_id
+            p_connection_id: id,
           },
         )
 
@@ -212,8 +229,33 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
         const orderExists = existingOrderCheck
 
         if (!orderExists) {
+          // Normalize fulfillment status to match our constraints
+          const normalizeFulfillmentStatus = (status: string | null | undefined): string => {
+            if (!status) return "unfulfilled"
+            const normalized = status.toLowerCase().trim()
+            const validStatuses = ["fulfilled", "unfulfilled", "partial", "restocked", "pending", "open", "cancelled"]
+            return validStatuses.includes(normalized) ? normalized : "unfulfilled"
+          }
+
+          // Normalize financial status to match our constraints
+          const normalizeFinancialStatus = (status: string | null | undefined): string => {
+            if (!status) return "pending"
+            const normalized = status.toLowerCase().trim()
+            const validStatuses = [
+              "pending",
+              "authorized",
+              "partially_paid",
+              "paid",
+              "partially_refunded",
+              "refunded",
+              "voided",
+              "cancelled",
+            ]
+            return validStatuses.includes(normalized) ? normalized : "pending"
+          }
+
           const orderData = {
-            shopify_connection_id: id, // shopify_connection_id
+            shopify_connection_id: id,
             shopify_order_id: order.id.toString(),
             order_number: order.order_number || order.name || `#${order.id}`,
             customer_name: order.customer
@@ -223,16 +265,18 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
             customer_phone: order.customer?.phone || "",
             shipping_address: order.shipping_address || {},
             line_items: order.line_items || [],
-            total_price: Number.parseFloat(order.total_price || "0.00"), // Ensure this is a number
-            fulfillment_status: order.fulfillment_status || "unfulfilled",
-            financial_status: order.financial_status || "pending",
+            total_price: Number.parseFloat(order.total_price || "0.00"),
+            fulfillment_status: normalizeFulfillmentStatus(order.fulfillment_status),
+            financial_status: normalizeFinancialStatus(order.financial_status),
             created_at: order.created_at || new Date().toISOString(),
             synced_at: new Date().toISOString(),
           }
 
           console.log(`💾 Inserting order: ${orderData.order_number}`)
+          console.log(`   - Fulfillment status: ${order.fulfillment_status} -> ${orderData.fulfillment_status}`)
+          console.log(`   - Financial status: ${order.financial_status} -> ${orderData.financial_status}`)
           const { error: insertError } = await supabaseServiceRole.rpc("insert_shopify_order", {
-            p_data: orderData, // This will be stringified by the Supabase client
+            p_data: orderData,
           })
 
           if (insertError) {
@@ -242,10 +286,14 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
             syncedCount++
             console.log(`✅ Synced order: ${order.order_number || order.name}`)
 
+            // Create delivery order if auto-create is enabled
             if (connection.settings?.auto_create_orders && order.shipping_address) {
               try {
-                await createDeliveryOrder(order, connection, user.id)
-                console.log(`📦 Created delivery order for: ${order.order_number || order.name}`)
+                const deliveryCreated = await createDeliveryOrder(order, connection, user.id)
+                if (deliveryCreated) {
+                  deliveryOrdersCreated++
+                  console.log(`📦 Created delivery order for: ${order.order_number || order.name}`)
+                }
               } catch (deliveryError) {
                 console.error(`❌ Error creating delivery order for ${order.id}:`, deliveryError)
               }
@@ -260,28 +308,39 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
       }
     }
 
-    // Update connection stats
+    // Update connection stats with correct count
     try {
       console.log("📊 Updating connection stats...")
+      const { data: currentConnection } = await supabaseServiceRole
+        .from("shopify_connections")
+        .select("orders_synced")
+        .eq("id", id)
+        .single()
+
+      const newOrdersCount = (currentConnection?.orders_synced || 0) + syncedCount
+
       await supabaseServiceRole
         .from("shopify_connections")
         .update({
           last_sync: new Date().toISOString(),
-          orders_synced: (connection.orders_synced || 0) + syncedCount,
+          orders_synced: newOrdersCount,
         })
         .eq("id", id)
         .eq("admin_id", user.id)
-      console.log("✅ Connection stats updated")
+      console.log(`✅ Connection stats updated - Total orders synced: ${newOrdersCount}`)
     } catch (updateError) {
       console.error("⚠️ Error updating connection stats:", updateError)
     }
 
-    const message = `Successfully synced ${syncedCount} orders from Shopify${errorCount > 0 ? ` (${errorCount} errors)` : ""}`
+    const message = `Successfully synced ${syncedCount} orders from Shopify${deliveryOrdersCreated > 0 ? ` and created ${deliveryOrdersCreated} delivery orders` : ""}${errorCount > 0 ? ` (${errorCount} errors)` : ""}`
 
-    console.log(`🎉 Sync completed: ${syncedCount} synced, ${errorCount} errors`)
+    console.log(
+      `🎉 Sync completed: ${syncedCount} synced, ${deliveryOrdersCreated} delivery orders created, ${errorCount} errors`,
+    )
     return NextResponse.json({
       success: true,
       synced_count: syncedCount,
+      delivery_orders_created: deliveryOrdersCreated,
       total_orders: orders.length,
       error_count: errorCount,
       message,
@@ -312,18 +371,27 @@ async function fetchShopifyOrders(shopDomain: string, accessToken: string): Prom
   const url = `https://${cleanDomain}/admin/api/2023-10/orders.json?status=any&limit=50`
 
   console.log("🌐 Fetching from Shopify API:", url)
+  console.log("🔑 Using access token:", accessToken.substring(0, 10) + "...")
+
+  // Create a timeout promise
+  const timeoutPromise = new Promise((_, reject) => {
+    setTimeout(() => reject(new Error("TIMEOUT: Request took longer than 30 seconds")), 30000)
+  })
 
   try {
-    const response = await fetch(url, {
+    // Race between fetch and timeout
+    const fetchPromise = fetch(url, {
       method: "GET",
       headers: {
         "X-Shopify-Access-Token": accessToken,
         "Content-Type": "application/json",
         "User-Agent": "DeliveryOS/1.0",
+        Accept: "application/json",
       },
-      // Add timeout to prevent hanging requests
-      signal: AbortSignal.timeout(30000), // 30 second timeout
     })
+
+    console.log("📡 Making request to Shopify API...")
+    const response = (await Promise.race([fetchPromise, timeoutPromise])) as Response
 
     console.log("📡 Shopify API response status:", response.status)
     console.log("📡 Shopify API response headers:", Object.fromEntries(response.headers.entries()))
@@ -366,11 +434,13 @@ async function fetchShopifyOrders(shopDomain: string, accessToken: string): Prom
 
     // Handle different types of errors
     if (error instanceof TypeError && error.message.includes("Failed to fetch")) {
-      throw new Error("Network error: Unable to connect to Shopify API. Please check your internet connection.")
+      throw new Error(
+        "NETWORK_ERROR: Unable to connect to Shopify API. Please check your internet connection and ensure the Shopify domain is correct.",
+      )
     }
 
-    if (error instanceof DOMException && error.name === "AbortError") {
-      throw new Error("Request timeout: Shopify API took too long to respond. Please try again.")
+    if (error instanceof Error && error.message.includes("TIMEOUT")) {
+      throw new Error("TIMEOUT: Shopify API took too long to respond. Please try again.")
     }
 
     // Re-throw the error if it's already a custom error
@@ -420,12 +490,12 @@ async function createDeliveryOrder(shopifyOrder: any, connection: any, adminId: 
           .join(", ") || "Shopify Order Items",
       priority: "normal" as const,
       status: "pending" as const,
-      created_by: adminId, // Use created_by instead of admin_id
+      created_by: adminId,
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
       // Store Shopify connection info for later fulfillment updates
-      shopify_order_id: shopifyOrder.id.toString(),
-      shopify_connection_id: connection.id,
+      external_order_id: shopifyOrder.id.toString(),
+      source: "shopify",
     }
 
     const { error } = await supabaseServiceRole.from("orders").insert(deliveryOrderData)
@@ -434,6 +504,7 @@ async function createDeliveryOrder(shopifyOrder: any, connection: any, adminId: 
       throw error
     } else {
       console.log(`✅ Created delivery order: ${orderNumber}`)
+      return true // Return success indicator
     }
   } catch (error) {
     console.error("❌ Error in createDeliveryOrder:", error)

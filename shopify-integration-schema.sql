@@ -44,6 +44,38 @@ CREATE TABLE IF NOT EXISTS shopify_orders (
   UNIQUE(shopify_connection_id, shopify_order_id)
 );
 
+-- Drop the existing constraint if it exists
+ALTER TABLE shopify_orders DROP CONSTRAINT IF EXISTS valid_fulfillment_status;
+
+-- Add a more comprehensive constraint that includes all possible Shopify fulfillment statuses
+ALTER TABLE shopify_orders ADD CONSTRAINT valid_fulfillment_status 
+CHECK (fulfillment_status IN (
+  'fulfilled', 
+  'unfulfilled', 
+  'partial', 
+  'restocked',
+  'pending',
+  'open',
+  'cancelled',
+  'null'
+));
+
+-- Drop the existing constraint if it exists  
+ALTER TABLE shopify_orders DROP CONSTRAINT IF EXISTS valid_financial_status;
+
+-- Add constraint for financial_status
+ALTER TABLE shopify_orders ADD CONSTRAINT valid_financial_status 
+CHECK (financial_status IN (
+  'pending',
+  'authorized', 
+  'partially_paid',
+  'paid',
+  'partially_refunded',
+  'refunded',
+  'voided',
+  'cancelled'
+));
+
 -- Create Shopify webhook logs table for debugging
 CREATE TABLE IF NOT EXISTS shopify_webhook_logs (
   id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
