@@ -1,6 +1,7 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { createClient } from "@supabase/supabase-js"
 import { logError } from "@/lib/error-handler"
+import { shopifyFulfillmentSync } from "@/lib/shopify-fulfillment-sync"
 
 const supabaseServiceRole = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -50,6 +51,7 @@ export async function POST(request: NextRequest) {
       status: "delivered",
       completed_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
+      sync_status: "pending", // Mark for sync
       ...completionData, // Include photos, notes, signature, etc.
     }
 
@@ -62,43 +64,54 @@ export async function POST(request: NextRequest) {
 
     console.log(`✅ Order ${order.order_number} marked as delivered by driver`)
 
-    // If this is a Shopify order, automatically update fulfillment
-    let shopifyResult = null
-    if (order.shopify_order_id && order.shopify_connections) {
-      const connection = order.shopify_connections
+    // Queue for Shopify fulfillment sync if this is a Shopify order
+    let shopifyQueued = false
+    if (order.shopify_order_id && order.shopify_connections?.is_active) {
+      try {
+        await shopifyFulfillmentSync.queueOrderForFulfillment(orderId)
+        shopifyQueued = true
+        console.log(`📦 Queued order ${order.order_number} for Shopify fulfillment sync`)
+      } catch (fulfillmentError) {
+        console.error("⚠️ Failed to queue order for fulfillment sync:", fulfillmentError)
+        // Don't fail the entire request if fulfillment queuing fails
+      }
+    }
 
-      if (connection.is_active && connection.access_token) {
-        try {
-          shopifyResult = await updateShopifyFulfillment(
-            connection.shop_domain,
-            connection.access_token,
-            order.shopify_order_id,
-            order.order_number,
-            driverId,
-          )
+    // Also try immediate fulfillment for faster response (fallback to queue if this fails)
+    let immediateResult = null
+    if (order.shopify_order_id && order.shopify_connections?.is_active) {
+      try {
+        immediateResult = await shopifyFulfillmentSync.fulfillShopifyOrder(
+          order.shopify_connections.shop_domain,
+          order.shopify_connections.access_token,
+          order.shopify_order_id,
+          order.order_number,
+          driverId,
+        )
 
+        if (immediateResult.success) {
           // Update our record with fulfillment info
           await supabaseServiceRole
             .from("orders")
             .update({
-              shopify_fulfillment_id: shopifyResult.fulfillment_id,
+              shopify_fulfillment_id: immediateResult.fulfillment_id,
               shopify_fulfilled_at: new Date().toISOString(),
+              sync_status: "synced",
             })
             .eq("id", orderId)
 
-          console.log(`🏪 Shopify fulfillment updated for order: ${order.order_number}`)
-        } catch (shopifyError) {
-          console.error("⚠️ Failed to update Shopify fulfillment:", shopifyError)
-          // Don't fail the entire request if Shopify update fails
-          shopifyResult = { error: shopifyError.message }
+          console.log(`🏪 Immediate Shopify fulfillment successful for order: ${order.order_number}`)
         }
+      } catch (shopifyError) {
+        console.error("⚠️ Immediate Shopify fulfillment failed, will rely on queue:", shopifyError)
+        // Queue will handle this
       }
     }
 
     // Send notifications
     await Promise.all([
       sendDriverCompletionNotification(order, driverId),
-      sendAdminCompletionNotification(order, driverId),
+      sendAdminCompletionNotification(order, driverId, immediateResult?.success || shopifyQueued),
     ])
 
     return NextResponse.json({
@@ -110,8 +123,11 @@ export async function POST(request: NextRequest) {
         status: "delivered",
         completed_at: updateData.completed_at,
       },
-      shopify_updated: !!shopifyResult && !shopifyResult.error,
-      shopify_result: shopifyResult,
+      shopify_sync: {
+        queued: shopifyQueued,
+        immediate_success: immediateResult?.success || false,
+        fulfillment_id: immediateResult?.fulfillment_id,
+      },
     })
   } catch (error) {
     console.error("❌ Error completing order:", error)
@@ -124,58 +140,6 @@ export async function POST(request: NextRequest) {
       },
       { status: 500 },
     )
-  }
-}
-
-async function updateShopifyFulfillment(
-  shopDomain: string,
-  accessToken: string,
-  shopifyOrderId: string,
-  orderNumber: string,
-  driverId: string,
-): Promise<{ fulfillment_id: string }> {
-  console.log(`🏪 Updating Shopify fulfillment for order: ${shopifyOrderId}`)
-
-  // Get driver info for tracking
-  const { data: driver } = await supabaseServiceRole
-    .from("user_profiles")
-    .select("first_name, last_name, phone")
-    .eq("user_id", driverId)
-    .single()
-
-  const driverName = driver ? `${driver.first_name || ""} ${driver.last_name || ""}`.trim() || "Driver" : "Driver"
-
-  const fulfillmentData = {
-    fulfillment: {
-      location_id: null,
-      tracking_number: `DEL-${orderNumber}`,
-      tracking_company: "Local Delivery Service",
-      tracking_url: null,
-      notify_customer: true,
-      line_items: [], // Empty array fulfills all items
-    },
-  }
-
-  const response = await fetch(`https://${shopDomain}/admin/api/2023-10/orders/${shopifyOrderId}/fulfillments.json`, {
-    method: "POST",
-    headers: {
-      "X-Shopify-Access-Token": accessToken,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(fulfillmentData),
-  })
-
-  if (!response.ok) {
-    const errorText = await response.text()
-    console.error("❌ Shopify fulfillment error:", response.status, errorText)
-    throw new Error(`Shopify fulfillment failed: ${response.status} ${errorText}`)
-  }
-
-  const result = await response.json()
-  console.log(`✅ Shopify fulfillment created: ${result.fulfillment.id}`)
-
-  return {
-    fulfillment_id: result.fulfillment.id.toString(),
   }
 }
 
@@ -197,7 +161,7 @@ async function sendDriverCompletionNotification(order: any, driverId: string) {
   }
 }
 
-async function sendAdminCompletionNotification(order: any, driverId: string) {
+async function sendAdminCompletionNotification(order: any, driverId: string, shopifySync: boolean) {
   try {
     // Get driver info
     const { data: driver } = await supabaseServiceRole
@@ -208,10 +172,16 @@ async function sendAdminCompletionNotification(order: any, driverId: string) {
 
     const driverName = driver ? `${driver.first_name || ""} ${driver.last_name || ""}`.trim() || "Driver" : "Driver"
 
+    const shopifyMessage = order.shopify_order_id
+      ? shopifySync
+        ? " and Shopify fulfillment is being processed"
+        : " (Shopify sync pending)"
+      : ""
+
     const notificationData = {
       user_id: order.created_by,
       title: "Order Delivered",
-      message: `Order ${order.order_number} has been successfully delivered by ${driverName}${order.shopify_order_id ? " and Shopify has been updated" : ""}`,
+      message: `Order ${order.order_number} has been successfully delivered by ${driverName}${shopifyMessage}`,
       type: "success",
       read: false,
       created_at: new Date().toISOString(),

@@ -46,9 +46,16 @@ import {
   Truck,
   Clock,
   CheckCircle2,
+  Bug,
+  TestTube,
+  Wrench,
+  Key,
 } from "lucide-react"
 
 import { supabase } from "@/lib/supabase"
+import { FulfillmentDebugTool } from "@/components/fulfillment-debug-tool"
+import { ShopifyOrderFixer } from "@/components/shopify-order-fixer"
+import { ShopifyTokenUpdater } from "@/components/shopify-token-updater"
 
 interface ShopifyConnection {
   id: string
@@ -612,11 +619,19 @@ export default function ShopifyIntegrationPage() {
 
       {/* Main Content */}
       <Tabs defaultValue="connections" className="space-y-6">
-        <TabsList className="grid w-full grid-cols-4">
+        <TabsList className="grid w-full grid-cols-6">
           <TabsTrigger value="connections">Connections</TabsTrigger>
           <TabsTrigger value="orders">Recent Orders</TabsTrigger>
           <TabsTrigger value="setup">Setup Guide</TabsTrigger>
           <TabsTrigger value="webhooks">Webhooks</TabsTrigger>
+          <TabsTrigger value="debug">
+            <Bug className="mr-2 h-4 w-4" />
+            Debug
+          </TabsTrigger>
+          <TabsTrigger value="fix">
+            <Wrench className="mr-2 h-4 w-4" />
+            Fix Orders
+          </TabsTrigger>
         </TabsList>
 
         {/* Connections Tab */}
@@ -1059,6 +1074,63 @@ export default function ShopifyIntegrationPage() {
                   </div>
                 </div>
               </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        {/* Debug Tab */}
+        <TabsContent value="debug" className="space-y-6">
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <TestTube className="h-5 w-5" />
+                Fulfillment Debug Tool
+              </CardTitle>
+              <CardDescription>Debug and test Shopify fulfillment sync for specific orders</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <FulfillmentDebugTool />
+            </CardContent>
+          </Card>
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Key className="h-5 w-5" />
+                Update Access Token
+              </CardTitle>
+              <CardDescription>Update the Shopify access token for connections that are missing tokens</CardDescription>
+            </CardHeader>
+            <CardContent>
+              {connections.length > 0 && (
+                <div className="space-y-4">
+                  {connections.map((connection) => (
+                    <div key={connection.id}>
+                      <ShopifyTokenUpdater connectionId={connection.id} shopDomain={connection.shop_domain} />
+                    </div>
+                  ))}
+                </div>
+              )}
+              {connections.length === 0 && (
+                <p className="text-muted-foreground">No Shopify connections found. Please connect a store first.</p>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        {/* Fix Orders Tab */}
+        <TabsContent value="fix" className="space-y-6">
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Wrench className="h-5 w-5" />
+                Fix Shopify Orders
+              </CardTitle>
+              <CardDescription>
+                Fix orders that are marked as Shopify orders but missing required Shopify Order IDs
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <ShopifyOrderFixer />
             </CardContent>
           </Card>
         </TabsContent>
