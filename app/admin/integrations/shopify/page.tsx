@@ -53,7 +53,7 @@ import {
 } from "lucide-react"
 
 import { supabase } from "@/lib/supabase"
-import { FulfillmentDebugTool } from "@/components/fulfillment-debug-tool"
+import FulfillmentDebugTool from "@/components/fulfillment-debug-tool"
 import { ShopifyOrderFixer } from "@/components/shopify-order-fixer"
 import { ShopifyTokenUpdater } from "@/components/shopify-token-updater"
 
