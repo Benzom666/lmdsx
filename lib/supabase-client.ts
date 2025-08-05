@@ -27,7 +27,7 @@ export const getSupabaseClient = () => {
         },
       },
       db: {
-        schema: "public",
+        // Remove explicit schema since it defaults to 'public' 
       },
       realtime: {
         params: {

@@ -44,6 +44,11 @@ export interface UserProfile {
   updated_at: string
 }
 
+// Driver interface extending UserProfile for driver-specific data
+export interface Driver extends UserProfile {
+  role: "driver"
+}
+
 export interface Order {
   id: string
   order_number: string

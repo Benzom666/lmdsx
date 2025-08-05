@@ -5,19 +5,7 @@ import { createContext, useContext, useEffect, useState, useCallback } from "rea
 import { useRouter } from "next/navigation"
 import { supabase } from "@/lib/supabase"
 import type { User } from "@supabase/supabase-js"
-
-interface UserProfile {
-  user_id: string
-  email: string
-  role: "super_admin" | "admin" | "driver"
-  status: "active" | "suspended" | "pending"
-  full_name?: string
-  first_name?: string
-  last_name?: string
-  phone?: string
-  created_at: string
-  updated_at: string
-}
+import type { UserProfile } from "@/lib/supabase"
 
 interface AuthContextType {
   user: User | null
@@ -59,9 +47,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY))
         }
 
-        const profilePromise = supabase.from("user_profiles").select("*").eq("user_id", userId).single()
+        const profileResponse = await withTimeout(
+          supabase.from("user_profiles").select("*").eq("user_id", userId).single(),
+          AUTH_TIMEOUT
+        )
 
-        const { data, error: profileError } = await withTimeout(profilePromise, AUTH_TIMEOUT)
+        const { data, error: profileError } = profileResponse
 
         if (profileError) {
           console.error("Profile fetch error:", profileError)
@@ -169,11 +160,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setError(null)
 
         // Get initial session with timeout
-        const sessionPromise = supabase.auth.getSession()
+        const sessionResponse = await withTimeout(
+          supabase.auth.getSession(),
+          AUTH_TIMEOUT
+        )
         const {
           data: { session },
           error: sessionError,
-        } = await withTimeout(sessionPromise, AUTH_TIMEOUT)
+        } = sessionResponse
 
         if (sessionError) {
           throw sessionError
@@ -257,8 +251,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setError(null)
       setLoading(true)
 
-      const signOutPromise = supabase.auth.signOut()
-      await withTimeout(signOutPromise, AUTH_TIMEOUT)
+      await withTimeout(
+        supabase.auth.signOut(),
+        AUTH_TIMEOUT
+      )
 
       setUser(null)
       setProfile(null)

@@ -1195,7 +1195,7 @@ class RouteManager {
     } catch (error) {
       console.error("Error ending shift:", error)
       // Don't throw error for missing tables - just log it
-      if (error.message?.includes("Route tables not available")) {
+      if (error instanceof Error && error.message?.includes("Route tables not available")) {
         console.log("Shift end completed (in-memory mode)")
         return
       }

@@ -15,7 +15,9 @@ export function rateLimit(
   limit = 100,
   windowMs: number = 60 * 1000, // 1 minute
 ): { success: boolean; remaining: number; resetTime: number } {
-  const ip = request.ip || request.headers.get("x-forwarded-for") || "unknown"
+  const ip = request.headers.get("x-forwarded-for") || 
+             request.headers.get("x-real-ip") || 
+             "unknown"
   const key = `${ip}:${request.nextUrl.pathname}`
   const now = Date.now()
 

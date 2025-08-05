@@ -59,7 +59,14 @@ export class PerformanceMonitor {
       // Measure Core Web Vitals
       const observer = new PerformanceObserver((list) => {
         for (const entry of list.getEntries()) {
-          console.log(`📊 ${entry.name}: ${entry.value}`)
+          // Check if entry has value property (for certain performance entry types)
+          if ('value' in entry && typeof entry.value === 'number') {
+            console.log(`📊 ${entry.name}: ${entry.value}`)
+          } else if ('duration' in entry && typeof entry.duration === 'number') {
+            console.log(`📊 ${entry.name}: ${entry.duration}ms`)
+          } else {
+            console.log(`📊 ${entry.name}: ${entry.entryType}`)
+          }
         }
       })
 

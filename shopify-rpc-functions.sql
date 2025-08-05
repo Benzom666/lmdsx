@@ -34,7 +34,30 @@ SECURITY DEFINER
 AS $$
 DECLARE
   new_id UUID;
+  connection_id_str TEXT;
 BEGIN
+  -- Validate required fields
+  IF p_data IS NULL THEN
+    RAISE EXCEPTION 'Input data cannot be NULL';
+  END IF;
+  
+  IF p_data->>'shopify_connection_id' IS NULL THEN
+    RAISE EXCEPTION 'shopify_connection_id is required';
+  END IF;
+  
+  IF p_data->>'shopify_order_id' IS NULL THEN
+    RAISE EXCEPTION 'shopify_order_id is required';
+  END IF;
+
+  -- Validate UUID format
+  connection_id_str := p_data->>'shopify_connection_id';
+  BEGIN
+    -- Test if it's a valid UUID
+    PERFORM connection_id_str::UUID;
+  EXCEPTION WHEN OTHERS THEN
+    RAISE EXCEPTION 'Invalid UUID format for shopify_connection_id: %', connection_id_str;
+  END;
+
   -- Explicitly use public schema for the table
   INSERT INTO public.shopify_orders (
     shopify_connection_id,
@@ -59,14 +82,26 @@ BEGIN
     p_data->>'customer_phone',
     p_data->'shipping_address',
     p_data->'line_items',
-    (p_data->>'total_price')::DECIMAL(10,2),
+    CASE 
+      WHEN p_data->>'total_price' IS NULL THEN NULL
+      ELSE (p_data->>'total_price')::DECIMAL(10,2)
+    END,
     p_data->>'fulfillment_status',
     p_data->>'financial_status',
-    (p_data->>'created_at')::TIMESTAMP WITH TIME ZONE,
-    (p_data->>'synced_at')::TIMESTAMP WITH TIME ZONE
+    CASE 
+      WHEN p_data->>'created_at' IS NULL THEN NOW()
+      ELSE (p_data->>'created_at')::TIMESTAMP WITH TIME ZONE
+    END,
+    CASE 
+      WHEN p_data->>'synced_at' IS NULL THEN NOW()
+      ELSE (p_data->>'synced_at')::TIMESTAMP WITH TIME ZONE
+    END
   ) RETURNING id INTO new_id;
 
   RETURN new_id;
+EXCEPTION
+  WHEN OTHERS THEN
+    RAISE EXCEPTION 'Failed to insert Shopify order: %', SQLERRM;
 END;
 $$;
 
