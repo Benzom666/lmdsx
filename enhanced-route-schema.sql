@@ -39,6 +39,11 @@ RETURNS TABLE(
     efficiency_rating VARCHAR(20)
 ) AS $$
 BEGIN
+    -- Validate input parameter
+    IF route_id_param IS NULL THEN
+        RAISE EXCEPTION 'route_id_param cannot be NULL';
+    END IF;
+
     RETURN QUERY
     WITH route_segments AS (
         SELECT 
@@ -47,15 +52,17 @@ BEGIN
         FROM route_stops 
         WHERE route_id = route_id_param 
         AND status != 'cancelled'
+        AND estimated_distance IS NOT NULL
         ORDER BY sequence
     ),
     segment_stats AS (
         SELECT 
-            SUM(estimated_distance) as total_dist,
-            AVG(estimated_distance) as avg_dist,
-            MAX(estimated_distance) as max_dist,
-            MIN(estimated_distance) as min_dist,
-            STDDEV(estimated_distance) as std_dist
+            COALESCE(SUM(estimated_distance), 0) as total_dist,
+            COALESCE(AVG(estimated_distance), 0) as avg_dist,
+            COALESCE(MAX(estimated_distance), 0) as max_dist,
+            COALESCE(MIN(estimated_distance), 0) as min_dist,
+            COALESCE(STDDEV(estimated_distance), 0) as std_dist,
+            COUNT(*) as segment_count
         FROM route_segments
         WHERE estimated_distance IS NOT NULL
     )
@@ -65,16 +72,20 @@ BEGIN
         s.max_dist,
         s.min_dist,
         CASE 
-            WHEN s.std_dist IS NULL OR s.avg_dist = 0 THEN 0
-            ELSE s.std_dist / s.avg_dist
+            WHEN s.std_dist IS NULL OR s.avg_dist = 0 OR s.segment_count < 2 THEN 0::DECIMAL(8,3)
+            ELSE (s.std_dist / NULLIF(s.avg_dist, 0))::DECIMAL(8,3)
         END as clustering_score,
         CASE 
+            WHEN s.avg_dist = 0 THEN 'NO_DATA'
             WHEN s.avg_dist < 3 THEN 'EXCELLENT'
             WHEN s.avg_dist < 5 THEN 'GOOD'
             WHEN s.avg_dist < 8 THEN 'FAIR'
             ELSE 'POOR'
         END as efficiency_rating
     FROM segment_stats s;
+EXCEPTION
+    WHEN OTHERS THEN
+        RAISE EXCEPTION 'Error calculating route efficiency: %', SQLERRM;
 END;
 $$ LANGUAGE plpgsql;
 

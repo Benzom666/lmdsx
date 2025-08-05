@@ -339,7 +339,10 @@ export default function AdminDriversPage() {
                     <p className="text-sm mb-4">
                       Use the Invitation System to invite existing drivers or create new driver accounts.
                     </p>
-                    <Button onClick={() => document.querySelector('[value="invitations"]')?.click()}>
+                    <Button onClick={() => {
+                      const element = document.querySelector('[value="invitations"]') as HTMLElement
+                      element?.click()
+                    }}>
                       <UserPlus className="mr-2 h-4 w-4" />
                       Manage Invitations
                     </Button>

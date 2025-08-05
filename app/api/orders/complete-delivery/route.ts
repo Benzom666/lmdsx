@@ -17,8 +17,11 @@ const supabaseServiceRole = createClient(
 export async function POST(request: NextRequest) {
   console.log("📦 Processing delivery completion...")
 
+  let requestData: any = {}
+  
   try {
-    const { orderId, driverId, completionData } = await request.json()
+    requestData = await request.json()
+    const { orderId, driverId, completionData } = requestData
 
     if (!orderId || !driverId) {
       return NextResponse.json({ error: "Missing required fields" }, { status: 400 })
@@ -106,7 +109,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Send notification to admin
-    await sendCompletionNotification(order, driverId, shopifyQueued || fulfillmentResult?.success)
+    await sendCompletionNotification(order, driverId, !!(shopifyQueued || fulfillmentResult?.success))
 
     return NextResponse.json({
       success: true,
@@ -120,7 +123,7 @@ export async function POST(request: NextRequest) {
     })
   } catch (error) {
     console.error("❌ Error completing delivery:", error)
-    logError(error, { endpoint: "complete_delivery", order_id: request.body?.orderId })
+    logError(error, { endpoint: "complete_delivery", order_id: requestData?.orderId })
 
     return NextResponse.json(
       {

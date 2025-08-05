@@ -130,7 +130,10 @@ export class ShopifySyncProcessor {
 
     const stats = data.reduce(
       (acc, task) => {
-        acc[task.status] = (acc[task.status] || 0) + 1
+        const status = task.status as keyof typeof acc
+        if (status in acc && status !== 'total') {
+          acc[status] = (acc[status] || 0) + 1
+        }
         acc.total++
         return acc
       },

@@ -16,8 +16,12 @@ const supabaseServiceRole = createClient(
 export async function POST(request: NextRequest) {
   console.log("🔄 Processing order status change...")
 
+  let requestData: any = {}
+  let shopifyResult: { fulfillment_id?: string; error?: string } | null = null
+  
   try {
-    const { orderId, status, notes, driverId, adminId } = await request.json()
+    requestData = await request.json()
+    const { orderId, status, notes, driverId, adminId } = requestData
 
     if (!orderId || !status) {
       return NextResponse.json({ error: "Missing required fields" }, { status: 400 })
@@ -86,7 +90,6 @@ export async function POST(request: NextRequest) {
     }
 
     // Handle Shopify fulfillment if order is delivered and has Shopify connection
-    let shopifyResult = null
     if ((status === "delivered" || status === "completed") && order.shopify_order_id && order.shopify_connections) {
       const connection = order.shopify_connections
 
@@ -123,7 +126,9 @@ export async function POST(request: NextRequest) {
         } catch (shopifyError) {
           console.error("⚠️ Failed to update Shopify fulfillment:", shopifyError)
           // Don't fail the entire request if Shopify update fails
-          shopifyResult = { error: shopifyError.message }
+          shopifyResult = { 
+            error: shopifyError instanceof Error ? shopifyError.message : 'Unknown Shopify error' 
+          }
         }
       }
     }
@@ -146,7 +151,7 @@ export async function POST(request: NextRequest) {
     })
   } catch (error) {
     console.error("❌ Error changing order status:", error)
-    logError(error, { endpoint: "change_order_status", order_id: request.body?.orderId })
+    logError(error, { endpoint: "change_order_status", order_id: requestData?.orderId })
 
     return NextResponse.json(
       {

@@ -44,6 +44,19 @@ export interface UserProfile {
   updated_at: string
 }
 
+// Driver interface extending UserProfile for driver-specific data
+export interface Driver extends UserProfile {
+  role: "driver"
+  is_active?: boolean
+  license_number?: string
+  vehicle_plate?: string
+  vehicle_model?: string
+  availability_status?: string
+  current_latitude?: number
+  current_longitude?: number
+  last_location_update?: string
+}
+
 export interface Order {
   id: string
   order_number: string
@@ -62,6 +75,8 @@ export interface Order {
   created_at: string
   updated_at: string
   photo_url?: string
+  estimated_delivery_time?: string
+  shopify_order_id?: string
 }
 
 export interface Notification {
@@ -111,6 +126,7 @@ export interface OrderUpdate {
   latitude?: number
   longitude?: number
   created_at: string
+  photo_url?: string
 }
 
 export interface Route {
